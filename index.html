@@ -1,0 +1,25 @@
+<html>
+	<head>
+		<script type="text/javascript" src="libs\underscore-min.js"></script>
+		<script type="text/javascript" src="libs\jquery.min.js"></script>
+		<script type="text/javascript" src="libs\jsface.min.js"></script>
+		<script type="text/javascript" src="mobo.js"></script>
+		<script type="text/javascript" src="cpu.js"></script>
+		<script type="text/javascript" src="ram.js"></script>
+		<script type="text/javascript" src="mmc.js"></script>
+		<script type="text/javascript" src="rom.js"></script>
+	</head>
+
+	<body>
+    	<div>
+	     	Select a NES rom: 
+	      	<input type="file" id="cartridge">
+    	</div>
+
+		<script type="text/javascript">
+			$(function() {
+				new Mobo().load();
+			});
+		</script>
+	</body>
+</html>
