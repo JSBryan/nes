@@ -1,7 +1,7 @@
 var ROM = Class({
     $const: {
         PRG_BANK_SIZE: 16384,    // 16KB.
-        TRAINER_SIZE: 512       // Trainer size if any.
+        TRAINER_SIZE: 512        // Trainer size if any.
     },
 
     constructor: function(options) {
@@ -34,8 +34,8 @@ var ROM = Class({
             this.fourScreenVRAM = (this.rom[6] & 0x08 > 0);
             this.batteryRAM = (this.rom[6] & 0x02 == 1);
             this.hasTrainer = (this.rom[6] & 0x04 == 1);
-            this.lowerNibbleMapper = (this.rom[6] & 0xF) >> 4;
-            this.upperNibbleMapper = (this.rom[7] & 0xF);
+            this.lowerNibbleMapper = this.rom[6] >> 4;
+            this.upperNibbleMapper = this.rom[7] & 0xF;
             this.nibbleMapper = this.lowerNibbleMapper | this.upperNibbleMapper;
             this.loadPRG();
             this.mapMemory();
@@ -85,7 +85,8 @@ var ROM = Class({
             this.mmc = eval('new MMC' + this.nibbleMapper + '(this.mobo)');
             this.mmc.load();
         } catch(e) {
-            throw new Error ('Mapper not implemented.', this.nibbleMapper);
+            console.log ('Mapper not implemented.', this.nibbleMapper);
+            throw e;
         }
     },
 
@@ -102,7 +103,22 @@ var ROM = Class({
     },
 
     dump: function() {
-        console.log('Program data', this.prgBanks);
-        console.log('Mapper', this.nibbleMapper);
+        var dumpMap = {
+                numOfPRG: 'Number of PRG banks',
+                numOfCHR: 'Number of CHR banks',
+                verticalMirroring: 'Vertical mirroring',
+                horizontalMirroring: 'Horizontal mirroring',
+                fourScreenVRAM: 'Use four screen VRAM',
+                batteryRAM: 'Use battery RAM',
+                hasTrainer: 'Has trainer program',
+                nibbleMapper: 'MMC number'
+            };
+
+        console.log('ROM dump:');
+        _.each(this, function(val, index) {
+            if (dumpMap[index]) {
+                console.log(dumpMap[index], val);
+            }
+        });
     }
 });

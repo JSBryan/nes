@@ -22,24 +22,28 @@ var Mobo = Class({
 	      	var file = this.files[0],
 	      		reader = new FileReader();
 
-			reader.onload = function(e) {
-				self.rom = new ROM({
-					mobo: self,
-					rom: new Uint8Array(reader.result)
-				});
+	      	if (file) {
+	      		reader.onload = function(e) {
+					self.rom = new ROM({
+						mobo: self,
+						rom: new Uint8Array(reader.result)
+					});
 
-				try {
-					self.ram.load();
-					self.rom.load();
-					self.cpu.load();
-					self.cpu.run();
-				} catch(e) {
-		            console.log(e.stack);
-            		alert (e.message);
+					cartridge.val('');
+
+					try {
+						self.ram.load();
+						self.rom.load();
+						self.cpu.load();
+						self.cpu.run();
+					} catch(e) {
+						console.log(e.message);
+			            console.log(e.stack);
+					}
 				}
-			}
 
-			reader.readAsArrayBuffer(file);	
+				reader.readAsArrayBuffer(file);	
+	      	}
 	    });
     },
 

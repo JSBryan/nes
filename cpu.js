@@ -1,21 +1,21 @@
 var CPU = Class({
     $const: {
         PROGRAM_COUNTER_START: 0x8000,
-        STACK_POINTER_START: 0x0100,
-        STACK_POINTER_END: 0x01FF,
-        ADDR_MODE_ZERO_PAGE: 0,         // Address modes. http://nesdev.com/NESDoc.pdf, Appendix E.
-        ADDR_MODE_ZERO_PAGE_X: 1,
-        ADDR_MODE_ZERO_PAGE_Y: 2,
-        ADDR_MODE_ABSOLUTE: 3,
-        ADDR_MODE_ABSOLUTE_X: 4,
-        ADDR_MODE_ABSOLUTE_Y: 5,
-        ADDR_MODE_INDIRECT: 6,
-        ADDR_MODE_IMPLIED: 7,
-        ADDR_MODE_ACCUMULATOR: 8,
-        ADDR_MODE_IMMEDIATE: 9,
-        ADDR_MODE_RELATIVE: 10,
-        ADDR_MODE_INDEXED_INDIRECT: 11,
-        ADDR_MODE_INDIRECT_INDEXED: 12
+        STACK_POINTER_START: 0x01FF,                // Stack pointer address, store in the order of top to bottom in NES.
+        STACK_POINTER_END: 0x0100,
+        ADDR_MODE_ZERO_PAGE: 'Zero Page',         // Memory address modes (http://nesdev.com/NESDoc.pdf, Appendix E).
+        ADDR_MODE_ZERO_PAGE_X: 'Zero Page X',
+        ADDR_MODE_ZERO_PAGE_Y: 'Zero Page Y',
+        ADDR_MODE_ABSOLUTE: 'Absolute',
+        ADDR_MODE_ABSOLUTE_X: 'Absolute X',
+        ADDR_MODE_ABSOLUTE_Y: 'Absolute Y',
+        ADDR_MODE_INDIRECT: 'Indirect',
+        ADDR_MODE_IMPLIED: 'Implied',
+        ADDR_MODE_ACCUMULATOR: 'Accumulator',
+        ADDR_MODE_IMMEDIATE: 'Immediate',
+        ADDR_MODE_RELATIVE: 'Relative',
+        ADDR_MODE_INDEXED_INDIRECT: 'Indexed Indirect',
+        ADDR_MODE_INDIRECT_INDEXED: 'Indirect Indexed'
     },
 
     ops: _.range(255),
@@ -38,6 +38,9 @@ var CPU = Class({
         this.interrupt_disabled_flag = null;    // Process interrupt disabled status flag (bit 2).
         this.zero_flag = null;      // Processor zero status flag (bit 1).
         this.carry_flag = null;     // Processor carry status flag (bit 0).
+
+        this.isInterrupted = null;
+        this.runningAddress = 0x00; // For debugging.
     },
 
     load: function() {
@@ -77,35 +80,35 @@ var CPU = Class({
         this.ops[0x1E] = {instruction: 'ASL', addrMode: CPU.ADDR_MODE_INDIRECT_INDEXED, bytes: 3, cycles: 7};
 
         // BCC
-        this.ops[0x90] = {instruction: 'BCC', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0x90] = {instruction: 'BCC', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BCS
-        this.ops[0xB0] = {instruction: 'BCS', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0xB0] = {instruction: 'BCS', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BEQ
-        this.ops[0xF0] = {instruction: 'BEQ', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0xF0] = {instruction: 'BEQ', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BIT
         this.ops[0x24] = {instruction: 'BIT', addrMode: CPU.ADDR_MODE_ZERO_PAGE, bytes: 2, cycles: 3};
         this.ops[0x2C] = {instruction: 'BIT', addrMode: CPU.ADDR_MODE_ABSOLUTE, bytes: 3, cycles: 4};
 
         // BMI
-        this.ops[0x30] = {instruction: 'BMI', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0x30] = {instruction: 'BMI', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BNE
-        this.ops[0xD0] = {instruction: 'BNE', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0xD0] = {instruction: 'BNE', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BPL
-        this.ops[0x10] = {instruction: 'BPL', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0x10] = {instruction: 'BPL', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BRK
         this.ops[0x00] = {instruction: 'BRK', addrMode: CPU.ADDR_MODE_IMPLIED, bytes: 1, cycles: 7};
 
         // BVC
-        this.ops[0x50] = {instruction: 'BVC', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0x50] = {instruction: 'BVC', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // BVS
-        this.ops[0x70] = {instruction: 'BVS', addrMode: this.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
+        this.ops[0x70] = {instruction: 'BVS', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
 
         // CLC
         this.ops[0x18] = {instruction: 'CLC', addrMode: CPU.ADDR_MODE_IMPLIED, bytes: 1, cycles: 2};
@@ -327,7 +330,7 @@ var CPU = Class({
                         this.opInstances[op.instruction] = eval('new ' + op.instruction + 'op' + '(options)');
                     } catch(e) {
                         console.log ('Op not implemented.', op.instruction, index);
-                        console.log(e.stack);
+                        throw e;
                     }  
                 }
             }
@@ -336,7 +339,26 @@ var CPU = Class({
 
     reset: function() {
         this.pc_reg = CPU.PROGRAM_COUNTER_START;
-        this.s_reg = CPU.STACK_POINTER_START;
+        this.sp_reg = CPU.STACK_POINTER_START;
+        this.ps_reg = null;         // Processor status register.
+        this.acc_reg = 0x00;        // Accumulator register.
+        this.x_reg = 0x00;          // X index register.
+        this.y_reg = 0x00;          // Y index register.
+    },
+
+    pushStack: function(data) {
+        this.mobo.ram.writeTo(this.sp_reg, [data]);
+        this.sp_reg--;
+    },
+
+    popStack: function() {
+        var val = 0x00;
+
+        this.sp_reg++;
+        val = this.mobo.ram.readFrom(this.sp_reg);
+        this.mobo.ram.writeTo(this.sp_reg, [0x00]);
+
+        return val;
     },
 
     run: function() {
@@ -346,25 +368,38 @@ var CPU = Class({
             for (i = 0; i < 0x2000; i++) {
                 var opCode = this.mobo.ram.readFrom(this.pc_reg),
                     op = this.ops[opCode],
-                    opInstance = null;
+                    opInstance = null,
+                    operandAddr = null;
+
+                this.runningAddress = this.pc_reg;
 
                 if (_.isObject(op)) {
                     opInstance = this.opInstances[op.instruction];
                     opInstance.execute();
-                    this.pc_reg += op.bytes;
+                    opInstance.dump();
                 } else {
-                    throw new Error('Op code not implemented.', opCode);
+                    throw new Error('Op code ' + opCode + ' not implemented.');
                 }
             }
             
         } catch(e) {
             throw e;
         }
-        
     },
 
-    setProcessorStatusRegister: function() {
+    setProcessStatusRegister: function(value) {
+        this.carry_flag = value & 1;
+        this.zero_flag = (value >> 1 & 1 == 0 ? 1 : 0);
+        this.interrupt_disabled_flag = value >> 2 & 1;
+        this.decimal_mode_flag = value >> 3 & 1;
+        this.break_flag = value >> 4 & 1;
+        this.unused_flag = value >> 5 & 1;
+        this.overflow_flag = value >> 6 & 1;
+        this.negative_flag = value >> 7 & 1;
+    },
 
+    getProcessorStatusRegister: function() {
+        return this.carry_flag | this.zero_flag << 1 | this.interrupt_disabled_flag << 2 | this.decimal_mode_flag << 3 | this.break_flag << 4 | this.unused_flag << 5 | this.overflow_flag << 6 | this.negative_flag << 7;
     },
 
     dump: function() {
@@ -372,19 +407,118 @@ var CPU = Class({
     }
 });
 
+/*
+    Op code instruction classes (http://obelisk.me.uk/6502/reference.html, http://users.telenet.be/kim1-6502/6502/proman.html).
+*/
 var Op = Class({
-
     constructor: function(options) {
         this.cpu = options.cpu;
         this.op = options.op;
+        this.operand = 0x00;
+        this.operandAddr = 0x00;
     },
 
     execute: function() {
-        console.log('Executing instruction', this.op.instruction);
+        this.getOperand();
+        this.cpu.pc_reg += this.op.bytes;    // Incrase program counter register by the size of instruction.
     },
 
-    toString: function() {
+    getOperand: function() {
+        var temp = 0x00,
+            firstOperand = this.cpu.mobo.ram.readFrom(this.cpu.pc_reg + 1),     // First operand after op code.
+            secondOperand = this.cpu.mobo.ram.readFrom(this.cpu.pc_reg + 2),    // Second operand after first operand if any.
+            address16Bits = 0x0000,     // Use to combine two 8 bits value into one 16 bits value.
+            signedByte = 0x00;          // Signed byte converted from an unsigned byte.
 
+        // Memory address modes (http://nesdev.com/NESDoc.pdf, Appendix E).
+        switch (this.op.addrMode) {
+            case CPU.ADDR_MODE_ZERO_PAGE:
+                this.operandAddr = firstOperand;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+            break;
+
+            case CPU.ADDR_MODE_ZERO_PAGE_X:
+                this.operandAddr = firstOperand + this.cpu.x_reg;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr) & 0xFF;
+            break;  
+
+            case CPU.ADDR_MODE_ZERO_PAGE_Y:
+                this.operandAddr = firstOperand + this.cpu.y_reg;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr) & 0xFF;
+            break;  
+
+            case CPU.ADDR_MODE_ABSOLUTE:
+                this.operandAddr = firstOperand | secondOperand << 8;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+            break;
+
+            case CPU.ADDR_MODE_ABSOLUTE_X:
+                this.operandAddr = firstOperand | secondOperand << 8;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr) + this.cpu.x_reg;
+            break;
+
+            case CPU.ADDR_MODE_ABSOLUTE_Y:
+                this.operandAddr = firstOperand | secondOperand << 8;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr) + this.cpu.y_reg;
+            break;
+
+            case CPU.ADDR_MODE_INDIRECT:
+                address16Bits = firstOperand | secondOperand << 8;
+                firstOperand = this.cpu.mobo.ram.readFrom(address16Bits);
+                secondOperand = this.cpu.mobo.ram.readFrom(address16Bits + 1);
+                this.operandAddr = firstOperand | secondOperand << 8;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+            break;
+
+            case CPU.ADDR_MODE_IMPLIED:
+
+            break;
+
+            case CPU.ADDR_MODE_ACCUMULATOR:
+                this.operandAddr = firstOperand;
+                this.operand = firstOperand;
+            break;
+
+            case CPU.ADDR_MODE_IMMEDIATE:
+                this.operandAddr = firstOperand;
+                this.operand = firstOperand;
+            break;
+
+            case CPU.ADDR_MODE_RELATIVE:
+                this.operandAddr = firstOperand;
+                this.operandAddr = (this.operandAddr > 127 ? this.operandAddr - 256 : this.operandAddr);
+                this.operandAddr = this.cpu.pc_reg + 2 + this.operandAddr;  // Offset starting at the end of this instruction size (2 bytes).
+                this.operand = firstOperand;
+            break;
+
+            case CPU.ADDR_MODE_INDEXED_INDIRECT:
+                this.operandAddr = firstOperand;
+                firstOperand = this.cpu.mobo.ram.readFrom(this.operandAddr + this.cpu.x_reg);
+                secondOperand = this.cpu.mobo.ram.readFrom(this.operandAddr + this.cpu.x_reg + 1);
+                this.operandAddr = firstOperand | secondOperand << 8;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+            break;
+
+            case CPU.ADDR_MODE_INDIRECT_INDEXED:
+                this.operandAddr = firstOperand;
+                firstOperand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                secondOperand = this.cpu.mobo.ram.readFrom(this.operandAddr + 1);
+                this.operandAddr = (firstOperand | secondOperand << 8) + this.cpu.y_reg;
+                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+            break;
+
+            default:
+        }
+    },
+
+    dump: function() {
+        var prefix = '$';
+
+        if (this.op.addrMode == CPU.ADDR_MODE_IMMEDIATE || this.op.addrMode == CPU.ADDR_MODE_INDIRECT_INDEXED) {
+            prefix = '#' + prefix;
+        }
+
+        console.log((this.cpu.runningAddress).toString(16).toUpperCase(), this.op.instruction, prefix + (this.operandAddr).toString(16).toUpperCase(), this.op.addrMode);
     }
 });
 
@@ -394,8 +528,17 @@ var ADCop = Class(Op, {
     },
 
     execute: function() {
+        var temp = 0x00;
+
         BRKop.$superp.execute.call(this);
-    }
+
+        temp = this.cpu.acc_reg + this.operand + this.cpu.carry_flag;
+        this.cpu.carry_flag = (temp > 0xFF ? 1 : 0);
+        this.cpu.zero_flag = (temp == 0 ? 1 : 0);
+        this.cpu.overflow_flag = ((this.cpu.acc_reg ^ temp) & (this.operand ^ temp) & 0x80 != 0 ? 1 : 0)   // (M^result)&(N^result)&0x80 is non zero, from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
+        this.cpu.negative_flag = temp >> 7 & 1;
+        this.cpu.acc_reg = temp;
+    }   
 });
 
 var ANDop = Class(Op, {
@@ -405,6 +548,10 @@ var ANDop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.cpu.acc_reg & this.operand;
+        this.cpu.zero_flag = (this.cpu.acc_reg == 0x00 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });
 
@@ -415,6 +562,19 @@ var ASLop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.op.addrMode == CPU.ADDR_MODE_ACCUMULATOR) {
+            this.cpu.carry_flag = this.cpu.acc_reg >> 7 & 1;
+            this.cpu.acc_reg = this.cpu.acc_reg << 1;
+            this.cpu.zero_flag = (this.cpu.acc_reg == 0x00 ? 1 : 0);
+            this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
+        } else {
+            this.cpu.carry_flag = this.operand >> 7 & 1;
+            this.operand = this.operand << 1;
+            this.zero_flag = (this.operand == 0x00 ? 1 : 0);
+            this.cpu.negative_flag = this.operand >> 7 & 1;
+            this.cpu.mobo.ram.writeTo(this.operandAddr, [this.operand]);
+        }
     }
 });
 
@@ -425,6 +585,10 @@ var BCCop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (!this.cpu.carry_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -435,6 +599,10 @@ var BCSop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.cpu.carry_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -445,6 +613,10 @@ var BEQop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.cpu.zero_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -455,6 +627,10 @@ var BITop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.zero_flag = this.operand & this.cpu.acc_reg;
+        this.cpu.overflow_flag = this.operand >> 6 & 1;
+        this.cpu.negative_flag = this.operand >> 7 & 1;
     }
 });
 
@@ -465,6 +641,10 @@ var BMIop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.cpu.negative_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -475,6 +655,10 @@ var BNEop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (!this.cpu.zero_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -485,6 +669,10 @@ var BPLop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (!this.cpu.negative_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -494,7 +682,21 @@ var BRKop = Class(Op, {
     },
 
     execute: function() {
+        var temp = this.cpu.pc_reg + 1,
+            IRQLowAddressValue = 0x00,
+            IRQHighAddressValue = 0x00;
+
         BRKop.$superp.execute.call(this);
+
+        this.cpu.pushStack(temp >> 8 & 0xFF);    // High bits.
+        this.cpu.pushStack(temp & 0xFF);         // Low bits.
+        this.pushStack(this.cpu.getProcessorStatusRegister());
+
+        IRQLowAddressValue = this.cpu.mobo.ram.readFrom(0xFFFE);
+        IRQHighAddressValue = this.cpu.mobo.ram.readFrom(0xFFFF);
+        this.cpu.pc_reg = IRQLowAddressValue | IRQHighAddressValue << 8;
+
+        this.cpu.break_flag = 1;
     }
 });
 
@@ -505,6 +707,10 @@ var BVCop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (!this.cpu.overflow_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -515,6 +721,10 @@ var BVSop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.cpu.overflow_flag) {
+            this.cpu.pc_reg = this.operandAddr;
+        }
     }
 });
 
@@ -525,6 +735,8 @@ var CLCop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.carry_flag = 0;
     }
 });
 
@@ -535,6 +747,8 @@ var CLDop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.decimal_mode_flag = 0;
     }
 });
 
@@ -545,6 +759,8 @@ var CLIop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.interrupt_disabled_flag = 0;
     }
 });
 
@@ -555,6 +771,8 @@ var CLVop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.overflow_flag = 0;
     }
 });
 
@@ -565,6 +783,10 @@ var CMPop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.carry_flag = (this.cpu.acc_reg >= this.operand ? 1 : 0);
+        this.cpu.zero_flag = (this.cpu.acc_reg == this.operand ? 1 : 0);
+        this.cpu.negative_flag = (this.cpu.acc_reg - this.operand) >> 7 & 1;
     }
 });
 
@@ -575,6 +797,10 @@ var CPXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.carry_flag = (this.cpu.x_reg >= this.operand ? 1 : 0);
+        this.cpu.zero_flag = (this.cpu.x_reg == this.operand ? 1 : 0);
+        this.cpu.negative_flag = (this.cpu.x_reg - this.operand) >> 7 & 1;
     }
 });
 
@@ -585,6 +811,10 @@ var CPYop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.carry_flag = (this.cpu.y_reg >= this.operand ? 1 : 0);
+        this.cpu.zero_flag = (this.cpu.y_reg == this.operand ? 1 : 0);
+        this.cpu.negative_flag = (this.cpu.y_reg - this.operand) >> 7 & 1;
     }
 });
 
@@ -595,6 +825,10 @@ var DECop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.operand = this.operand - 1;
+        this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
+        this.cpu.negative_flag = (this.operand >> 7 & 1);
     }
 });
 
@@ -605,6 +839,10 @@ var DEXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.x_reg--;
+        this.cpu.zero_flag = (this.cpu.x_reg == 0 ? 1: 0);
+        this.cpu.negative_flag = this.cpu.x_reg >> 7 & 1;
     }
 });
 
@@ -615,6 +853,10 @@ var DEYop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.y_reg--;
+        this.cpu.zero_flag = (this.cpu.y_reg == 0 ? 1: 0);
+        this.cpu.negative_flag = this.cpu.y_reg >> 7 & 1;
     }
 });
 
@@ -625,6 +867,10 @@ var EORop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.operand ^ this.cpu.acc_reg;
+        this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });
 
@@ -635,6 +881,11 @@ var INCop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.operand++;
+        this.cpu.mobo.ram.writeTo(this.operandAddr, [this.operand]);
+        this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.operand >> 7 & 1;
     }
 });
 
@@ -645,6 +896,10 @@ var INXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.x_reg++;
+        this.cpu.zero_flag = (this.cpu.x_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.x_reg >> 7 & 1;
     }
 });
 
@@ -655,6 +910,10 @@ var INYop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.y_reg++;
+        this.cpu.zero_flag = (this.cpu.y_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.y_reg >> 7 & 1;
     }
 });
 
@@ -665,6 +924,8 @@ var JMPop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.pc_reg = this.operandAddr;
     }
 });
 
@@ -675,6 +936,10 @@ var JSRop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.pushStack(this.cpu.pc_reg >> 8 & 0xFF);    // High bits.
+        this.cpu.pushStack(this.cpu.pc_reg & 0xFF);         // Low bits.
+        this.cpu.pc_reg = this.operandAddr;
     }
 });
 
@@ -685,6 +950,10 @@ var LDAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.operand;
+        this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });
 
@@ -695,6 +964,10 @@ var LDXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.x_reg = this.operand;
+        this.cpu.zero_flag = (this.cpu.x_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.x_reg >> 7 & 1;
     }
 });
 
@@ -705,6 +978,10 @@ var LDYop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.y_reg = this.operand;
+        this.cpu.zero_flag = (this.cpu.y_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.y_reg >> 7 & 1;
     }
 });
 
@@ -715,6 +992,19 @@ var LSRop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.instruction.addrMode == this.cpu.ADDR_MODE_ACCUMULATOR) {
+            this.cpu.acc_reg >>= 1;
+            this.cpu.carry_flag = this.cpu.acc_reg & 1;
+            this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+            this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
+        } else {
+            this.operand >>= 1;
+            this.cpu.carry_flag = this.operand & 1;
+            this.cpu.mobo.ram.writeTo(this.operandAddr, [this.operand]);
+            this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
+            this.cpu.negative_flag = this.operand >> 7 & 1;
+        }
     }
 });
 
@@ -735,6 +1025,10 @@ var ORAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.operand | this.cpu.acc_reg;
+        this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });
 
@@ -745,6 +1039,8 @@ var PHAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.pushStack(this.cpu.acc_reg);
     }
 });
 
@@ -755,6 +1051,8 @@ var PHPop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.pushStack(this.cpu.getProcessorStatusRegister());
     }
 });
 
@@ -765,6 +1063,10 @@ var PLAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.cpu.popStack();
+        this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });
 
@@ -775,6 +1077,8 @@ var PLPop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.setProcessStatusRegister(this.cpu.popStack());
     }
 });
 
@@ -785,6 +1089,18 @@ var ROLop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        if (this.op.addrMode == this.cpu.ADDR_MODE_ACCUMULATOR) {
+            this.cpu.carry_flag = this.cpu.acc_reg >> 7 & 1;
+            this.cpu.acc_reg = this.cpu.acc_reg << 1 + temp;
+            this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+            this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
+        } else {
+            this.cpu.carry_flag = this.operand >> 7 & 1;
+            this.operand = this.operand << 1 + temp;
+            this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
+            this.cpu.negative_flag = this.operand >> 7 & 1;
+        }
     }
 });
 
@@ -794,7 +1110,23 @@ var RORop = Class(Op, {
     },
 
     execute: function() {
+        var temp = 0;
+
         BRKop.$superp.execute.call(this);
+
+        temp = this.cpu.carry_flag;
+
+        if (this.op.addrMode == this.cpu.ADDR_MODE_ACCUMULATOR) {
+            this.cpu.carry_flag = this.cpu.acc_reg >> 7 & 1;
+            this.cpu.acc_reg = this.cpu.acc_reg >> 1 + temp;
+            this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
+            this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
+        } else {
+            this.cpu.carry_flag = this.operand >> 7 & 1;
+            this.operand = this.operand >> 1 + temp;
+            this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
+            this.cpu.negative_flag = this.operand >> 7 & 1;
+        }
     }
 });
 
@@ -805,6 +1137,9 @@ var RTIop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.setProcessStatusRegister(this.cpu.popStack());
+        this.cpu.pc_reg = this.cpu.popStack();
     }
 });
 
@@ -815,6 +1150,9 @@ var RTSop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.pc_reg = this.cpu.popStack();
+        this.cpu.pc_reg += this.cpu.popStack() << 8;    // Combine both low bits and high bits into a 16-bits value. See JSRop.
     }
 });
 
@@ -824,7 +1162,16 @@ var SBCop = Class(Op, {
     },
 
     execute: function() {
+        var temp = 0x00;
+
         BRKop.$superp.execute.call(this);
+
+        temp = this.cpu.acc_reg - this.operand - (1 - this.cpu.carry_flag);
+        this.cpu.carry_flag = (temp < 0 ? 0 : 1);
+        this.cpu.zero_flag = (temp == 0 ? 1 : 0);
+        this.cpu.overflow_flag = ((this.cpu.acc_reg ^ temp) & (this.operand ^ temp) & 0x80 != 0 ? 1 : 0)   // (M^result)&(N^result)&0x80 is non zero, from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
+        this.cpu.negative_flag = temp >> 7 & 1;
+        this.cpu.acc_reg = temp;
     }
 });
 
@@ -835,6 +1182,8 @@ var SECop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.carry_flag = 1;
     }
 });
 
@@ -845,6 +1194,8 @@ var SEDop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.decimal_mode_flag = 1;
     }
 });
 
@@ -855,6 +1206,8 @@ var SEIop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.interrupt_disabled_flag = 1;
     }
 });
 
@@ -865,6 +1218,8 @@ var STAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.mobo.ram.writeTo(this.operandAddr, [this.cpu.acc_reg]);
     }
 });
 
@@ -875,6 +1230,8 @@ var STXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.mobo.ram.writeTo(this.operandAddr, [this.cpu.x_reg]);
     }
 });
 
@@ -885,6 +1242,8 @@ var STYop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.mobo.ram.writeTo(this.operandAddr, [this.cpu.y_reg]);
     }
 });
 
@@ -895,6 +1254,10 @@ var TAXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.x_reg = this.cpu.acc_reg;
+        this.cpu.zero_flag = (this.cpu.x_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.x_reg >> 7 & 1;
     }
 });
 
@@ -905,6 +1268,10 @@ var TAYop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.y_reg = this.cpu.acc_reg;
+        this.cpu.zero_flag = (this.cpu.y_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.y_reg >> 7 & 1;
     }
 });
 
@@ -915,6 +1282,10 @@ var TSXop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.x_reg = this.cpu.sp_reg;
+        this.cpu.zero = (this.cpu.x_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.x_reg >> 7 & 1;
     }
 });
 
@@ -925,6 +1296,10 @@ var TXAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.cpu.sp_reg;
+        this.cpu.zero = (this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });
 
@@ -935,6 +1310,8 @@ var TXSop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.sp_reg = this.cpu.x_reg;
     }
 });
 
@@ -945,5 +1322,9 @@ var TYAop = Class(Op, {
 
     execute: function() {
         BRKop.$superp.execute.call(this);
+
+        this.cpu.acc_reg = this.cpu.y_reg;
+        this.cpu.zero = (this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.negative_flag = this.cpu.acc_reg >> 7 & 1;
     }
 });

@@ -44,7 +44,7 @@ var RAM = Class({
             return this.memory[address];
         } catch(e) {
             console.log('Invalie memory address.', address);
-            console.log(e.stack);
+            throw e;
         }
     },
 
