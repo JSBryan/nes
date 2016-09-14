@@ -43,12 +43,12 @@ var RAM = Class({
         try {
             return this.memory[address];
         } catch(e) {
-            console.log('Invalie memory address.', address);
+            console.log('Invalid memory address.', address);
             throw e;
         }
     },
 
     dump: function() {
-
+        console.log('RAM content:', this.memory);
     }
 });
