@@ -1,13 +1,15 @@
 <html>
 	<head>
-		<script type="text/javascript" src="libs\underscore-min.js"></script>
-		<script type="text/javascript" src="libs\jquery.min.js"></script>
-		<script type="text/javascript" src="libs\jsface.min.js"></script>
+		<script type="text/javascript" src="libs/pixi.min.js"></script>
+		<script type="text/javascript" src="libs/underscore-min.js"></script>
+		<script type="text/javascript" src="libs/jquery.min.js"></script>
+		<script type="text/javascript" src="libs/jsface.min.js"></script>
 		<script type="text/javascript" src="mobo.js"></script>
 		<script type="text/javascript" src="cpu.js"></script>
 		<script type="text/javascript" src="ram.js"></script>
 		<script type="text/javascript" src="mmc.js"></script>
 		<script type="text/javascript" src="rom.js"></script>
+		<script type="text/javascript" src="ppu.js"></script>
 	</head>
 
 	<body>
@@ -16,6 +18,8 @@
 	      	<input type="file" id="cartridge">
     	</div>
 
+    	<div id="tilesDisplay" style="width: 50%; margin: 0 auto;"></div>
+    	<div id="nameTableDisplay" style="width: 50%; margin: 0 auto;"></div>
 		<script type="text/javascript">
 			$(function() {
 				new Mobo().load();
