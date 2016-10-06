@@ -81,7 +81,7 @@ var CPU = Class({
         this.ops[0x06] = {instruction: 'ASL', addrMode: CPU.ADDR_MODE_ZERO_PAGE, bytes: 2, cycles: 5};
         this.ops[0x16] = {instruction: 'ASL', addrMode: CPU.ADDR_MODE_ZERO_PAGE_X, bytes: 2, cycles: 6};
         this.ops[0x0E] = {instruction: 'ASL', addrMode: CPU.ADDR_MODE_ABSOLUTE, bytes: 3, cycles: 6};
-        this.ops[0x1E] = {instruction: 'ASL', addrMode: CPU.ADDR_MODE_INDEXED_INDIRECT, bytes: 3, cycles: 7};
+        this.ops[0x1E] = {instruction: 'ASL', addrMode: CPU.ADDR_MODE_ABSOLUTE_X, bytes: 3, cycles: 7};
 
         // BCC
         this.ops[0x90] = {instruction: 'BCC', addrMode: CPU.ADDR_MODE_RELATIVE, bytes: 2, cycles: 2};
@@ -293,7 +293,7 @@ var CPU = Class({
 
         // STX
         this.ops[0x86] = {instruction: 'STX', addrMode: CPU.ADDR_MODE_ZERO_PAGE, bytes: 2, cycles: 3};
-        this.ops[0x96] = {instruction: 'STX', addrMode: CPU.ADDR_MODE_ZERO_PAGE_X, bytes: 2, cycles: 4};
+        this.ops[0x96] = {instruction: 'STX', addrMode: CPU.ADDR_MODE_ZERO_PAGE_Y, bytes: 2, cycles: 4};
         this.ops[0x8E] = {instruction: 'STX', addrMode: CPU.ADDR_MODE_ABSOLUTE, bytes: 3, cycles: 4};
 
         // STY
@@ -493,8 +493,8 @@ var CPU = Class({
             highBitsAddress = 0x00;
 
         if (this.isInterrupted) {
-            this.pushStack(this.pc_reg >> 8);       // High bits.
-            this.pushStack(this.pc_reg & 0xFF);     // Low bits.
+            this.pushStack(this.pc_reg >> 8);       // Returning address high bits.
+            this.pushStack(this.pc_reg & 0xFF);     // Returning address low bits.
             this.pushStack(this.getProcessorStatusRegister());
 
             switch (this.interruptType) {
@@ -631,8 +631,8 @@ var Op = Class({
 
             case CPU.ADDR_MODE_INDEXED_INDIRECT:
                 this.operandAddr = firstOperand;
-                firstOperand = this.cpu.mobo.ram.readFrom(this.operandAddr + this.cpu.x_reg);
-                secondOperand = this.cpu.mobo.ram.readFrom(this.operandAddr + this.cpu.x_reg + 1);
+                firstOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + this.cpu.x_reg) & 0xFF);
+                secondOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + this.cpu.x_reg + 1) & 0xFF);
                 this.operandAddr = firstOperand | secondOperand << 8;
                 this.operandAddr &= 0xFFFF;
                 this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
@@ -641,7 +641,7 @@ var Op = Class({
             case CPU.ADDR_MODE_INDIRECT_INDEXED:
                 this.operandAddr = firstOperand;
                 firstOperand = this.cpu.mobo.ram.readFrom(this.operandAddr);
-                secondOperand = this.cpu.mobo.ram.readFrom(this.operandAddr + 1);
+                secondOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + 1) & 0xFF);
                 this.operandAddr = (firstOperand | secondOperand << 8) + this.cpu.y_reg;
                 this.operandAddr &= 0xFFFF;
                 this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
@@ -658,9 +658,29 @@ var Op = Class({
             instruction = this.op.instruction,
             operand = prefix + (this.operandAddr).toString(16).toUpperCase(),
             addrMode = this.op.addrMode,
-            spaces = new Array(40 - (runningAddress.length + instruction.length + operand.length + addrMode.length)).toString().replace(/,/g, ' ');
+            spaces = new Array(40 - (runningAddress.length + instruction.length + operand.length + addrMode.length)).toString().replace(/,/g, ' '),
+            accu = (trace.debug_acc_reg).toString(16).toUpperCase(),
+            x = (trace.debug_x_reg).toString(16).toUpperCase(),
+            y = (trace.debug_y_reg).toString(16).toUpperCase();
 
-        console.log(runningAddress, instruction, operand, addrMode, spaces, 'A:', (trace.debug_acc_reg).toString(16).toUpperCase(), 'X:', (trace.debug_x_reg).toString(16).toUpperCase(), 'Y:', (trace.debug_y_reg).toString(16).toUpperCase(), 'P:', (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:', (trace.debug_sp_reg).toString(16).toUpperCase());
+        runningAddress = '0000'.substr(runningAddress.length) + runningAddress;
+
+        if (accu.length < 2) {
+            accu = 0 + accu;
+        }
+
+        if (x.length < 2) {
+            x = 0 + x;
+        }
+
+        if (y.length < 2) {
+            y = 0 + y;
+        }
+
+        console.log(runningAddress, instruction, operand, addrMode, spaces, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase());
+        
+        // To compare with http://www.qmtpro.com/~nes/misc/nestest.log file.
+        // console.log(runningAddress, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase());
     }
 });
 
@@ -676,7 +696,7 @@ var ADCop = Class(Op, {
 
         temp = this.cpu.acc_reg + this.operand + this.cpu.carry_flag;
         this.cpu.carry_flag = (temp > 0xFF ? 1 : 0);
-        this.cpu.zero_flag = (temp == 0 ? 1 : 0);
+        this.cpu.zero_flag = ((temp & 0xFF) == 0 ? 1 : 0);
         this.cpu.overflow_flag = (!(((this.cpu.acc_reg ^ this.operand) & 0x80) != 0) && (((this.cpu.acc_reg ^ temp) & 0x80)) != 0 ? 1 : 0); // !((M^N) & 0x80) && ((M^result) & 0x80) is non zero, from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
         this.cpu.negative_flag = temp >> 7 & 1;
         this.cpu.acc_reg = temp & 0xFF;
@@ -715,7 +735,7 @@ var ASLop = Class(Op, {
             this.cpu.carry_flag = this.operand >> 7 & 1;
             this.operand = this.operand << 1;
             this.operand &= 0xFF;
-            this.zero_flag = (this.operand == 0x00 ? 1 : 0);
+            this.cpu.zero_flag = (this.operand == 0x00 ? 1 : 0);
             this.cpu.negative_flag = this.operand >> 7 & 1;
             this.cpu.writeToRAM(this.operandAddr, [this.operand]);
         }
@@ -772,7 +792,7 @@ var BITop = Class(Op, {
     execute: function() {
         BRKop.$superp.execute.call(this);
 
-        this.cpu.zero_flag = (this.operand & this.cpu.acc_reg == 0 ? 1 : 0);
+        this.cpu.zero_flag = ((this.operand & this.cpu.acc_reg) == 0 ? 1 : 0);
         this.cpu.overflow_flag = this.operand >> 6 & 1;
         this.cpu.negative_flag = this.operand >> 7 & 1;
     }
@@ -1162,6 +1182,7 @@ var LSRop = Class(Op, {
             this.cpu.writeToRAM(this.operandAddr, [this.operand]);
             this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
             this.cpu.negative_flag = this.operand >> 7 & 1;
+            this.cpu.writeToRAM(this.operandAddr, [this.operand]);
         }
     }
 });
@@ -1269,6 +1290,7 @@ var ROLop = Class(Op, {
             this.operand = (this.operand << 1 & 0xFF) + temp;
             this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
             this.cpu.negative_flag = this.operand >> 7 & 1;
+            this.cpu.writeToRAM(this.operandAddr, [this.operand]);
         }
     }
 });
@@ -1297,6 +1319,7 @@ var RORop = Class(Op, {
             this.operand = (temp == 1 ? this.operand + 128 : this.operand);
             this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
             this.cpu.negative_flag = this.operand >> 7 & 1;
+            this.cpu.writeToRAM(this.operandAddr, [this.operand]);
         }
     }
 });
@@ -1342,9 +1365,9 @@ var SBCop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         temp = this.cpu.acc_reg - this.operand - (1 - this.cpu.carry_flag);
-        this.cpu.carry_flag = (temp > 0xFF ? 1 : 0);
-        this.cpu.zero_flag = (temp == 0 ? 1 : 0);
-        this.cpu.overflow_flag = (!(((this.cpu.acc_reg ^ this.operand) & 0x80) != 0) && (((this.cpu.acc_reg ^ temp) & 0x80)) != 0 ? 0 : 1); // !((M^N) & 0x80) && ((M^result) & 0x80) is non zero, from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
+        this.cpu.carry_flag = (temp > 255 || temp < 0 ? 0 : 1); 
+        this.cpu.zero_flag = ((temp & 0xFF) == 0 ? 1 : 0);
+        this.cpu.overflow_flag = (((this.cpu.acc_reg ^ temp) & 0x80) && ((this.cpu.acc_reg ^ this.operand) & 0x80) != 0 ? 1 : 0);
         this.cpu.negative_flag = temp >> 7 & 1;
         this.cpu.acc_reg = temp & 0xFF;
     }
@@ -1458,6 +1481,7 @@ var TSXop = Class(Op, {
     execute: function() {
         BRKop.$superp.execute.call(this);
 
+        this.cpu.x_reg = this.cpu.sp_reg - CPU.STACK_POINTER_END;   // Need to substract CPU stack starting memory address offset.
         this.cpu.zero_flag = (this.cpu.x_reg == 0 ? 1 : 0);
         this.cpu.negative_flag = this.cpu.x_reg >> 7 & 1;
     }
@@ -1485,6 +1509,7 @@ var TXSop = Class(Op, {
     execute: function() {
         BRKop.$superp.execute.call(this);
 
+        this.cpu.sp_reg = this.cpu.x_reg + CPU.STACK_POINTER_END;   // Need to add CPU stack starting memory address offset.
     }
 });
 

@@ -31,11 +31,11 @@ var ROM = Class({
             this.validateHeader();
             this.numOfPRG = this.rom[4];
             this.numOfCHR = this.rom[5];    // Number of 8KB CHR rom.
-            this.verticalMirroring = (this.rom[6] & 0x01 == 0);
-            this.horizontalMirroring = (this.rom[6] & 0x01 == 1);
-            this.fourScreenVRAM = (this.rom[6] & 0x08 > 0);
-            this.batteryRAM = (this.rom[6] & 0x02 == 1);
-            this.hasTrainer = (this.rom[6] & 0x04 == 1);
+            this.verticalMirroring = ((this.rom[6] & 1) == 1);
+            this.horizontalMirroring = ((this.rom[6] & 1) == 0);
+            this.fourScreenVRAM = (this.rom[6] >> 3 == 1);
+            this.batteryRAM = (this.rom[6] >> 1 == 1);
+            this.hasTrainer = (this.rom[6] >> 2 == 1);
             this.lowerNibbleMapper = this.rom[6] >> 4;
             this.upperNibbleMapper = this.rom[7] & 0xF;
             this.nibbleMapper = this.lowerNibbleMapper | this.upperNibbleMapper;

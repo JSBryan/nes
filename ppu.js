@@ -21,7 +21,7 @@ var PPU = Class({
         this.nameTableDisplayDevice = options.nameTableDisplayDevice;
         this.vram = new VRAM();                       // Video RAM.
         this.sram = new SRAM();                       // Sprite RAM.
-        this.tiles = [];                              // Tiles from pattern tables. Two tile sets each one is 256KB for a 512KB total.
+        this.tiles = new Array(0x200);                // Tiles from pattern tables. Two tile sets each one is 256KB for a 512KB total.
         this.tilesRenderer = null;
         this.nameTableRenderer = null;
         this.sramAddress = 0x00;
@@ -84,7 +84,6 @@ var PPU = Class({
 
     reset: function() {
         this.tiles.length = 0;
-        this.tiles = new Array(0x200);
 
         if (this.tilesRenderer) {
             this.tilesRenderer.reset();
