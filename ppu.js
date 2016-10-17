@@ -1,15 +1,21 @@
 var PPU = Class({
     $const: {
+        NES_RESOLUTION_WIDTH: 256, 
+        NES_RESOLUTION_HEIGHT: 224,
         V_RAM_SIZE: 0x10000,    // 64KB.              
         PATTERN_TABLES_START: 0x0000,
         PATTERN_TABLE_SIZE: 0x1000,
-        NAME_TABLES_START: 0x2000,
         NAME_TABLE_SIZE: 0x3C0,
-        NAME_TABLE_WIDTH: 32,       // Name table is 32x30 tiles.
+        NAME_TABLE_0_START: 0x2000,
+        NAME_TABLE_1_START: 0x2400,
+        NAME_TABLE_2_START: 0x2800,
+        NAME_TABLE_3_START: 0x2C00,
+        NAME_TABLE_WIDTH: 32,                   // Name table is 32x30 tiles.
         NAME_TABLE_HEIGHT: 30,
         ATTRIBUTE_TABLES_START: 0x23C0,
         ATTRIBUTE_TABLE_SIZE: 0x40,
-        PALETTES_START: 0x3F00
+        PALETTES_START: 0x3F00,
+        CPU_CYCLES_PER_SCANLINE: 113.667        // Number of CPU cycles per NES scanline.
     },
 
     // Palette from http://nesdev.com/pal.txt
@@ -17,24 +23,53 @@ var PPU = Class({
 
     constructor: function(options) {
         this.mobo = options.mobo;
+        this.mainDisplayDevice = options.mainDisplayDevice;
         this.tilesDisplayDevice = options.tilesDisplayDevice;
         this.nameTableDisplayDevice = options.nameTableDisplayDevice;
         this.vram = new VRAM();                       // Video RAM.
         this.sram = new SRAM();                       // Sprite RAM.
+        this.oam = new Array(64);                    // 64 sprites to be rendered.
         this.tiles = new Array(0x200);                // Tiles from pattern tables. Two tile sets each one is 256KB for a 512KB total.
+        this.mainRenderer = null;
         this.tilesRenderer = null;
         this.nameTableRenderer = null;
         this.sramAddress = 0x00;
         this.vramIOaddress = 0x00;
         this.vramIOAddressHighBits = 0x00;
         this.vramIOAddressLowBits = 0x00;
+        this.cycles = 0;
+        this.scanline = -1;
+        this.nameTable = 0;     // Current name table data.
+        this.tileIndex = 0;     // Current tile index in name table.
+        this.spriteOverflow = false;
     },
 
     load: function() {
         this.vram.load();
         this.sram.load();
-        this.reset();
-        this.mobo.cpu.writeToRAM(0x2002, [128]);
+
+        this.mainRenderer = new Renderer({
+            displayDevice: this.mainDisplayDevice,
+            width: 640,
+            height: 480
+        });
+        this.mainRenderer.load();
+
+        this.tilesRenderer = new Renderer({
+            displayDevice: this.tilesDisplayDevice,
+            width: 640,
+            height: 480
+        });
+        this.tilesRenderer.load();
+
+        this.nameTableRenderer = new Renderer({
+            displayDevice: this.nameTableDisplayDevice,
+            width: PPU.NAME_TABLE_WIDTH * 8,
+            height: PPU.NAME_TABLE_HEIGHT * 8
+        });
+        this.nameTableRenderer.load();
+        
+        this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, [128]);
     },
 
     loadTiles: function() {
@@ -83,59 +118,177 @@ var PPU = Class({
     },
 
     reset: function() {
+        this.cycles = 0;
+        this.scanline = -1;
+        this.tileIndex = 0;
+        this.nameTable = 0;
         this.tiles.length = 0;
+        this.mainRenderer.reset();
+        this.tilesRenderer.reset();
+        this.nameTableRenderer.reset();
+        this.vram.reset();
+        this.sram.reset();
+        this.spriteOverflow = false;
 
-        if (this.tilesRenderer) {
-            this.tilesRenderer.reset();
-        }
+        _.each(this.oam, function(oam, index, list) {
+            list[index] = 0xFF;
+        });
 
-        if (this.nameTableRenderer) {
-            this.nameTableRenderer.reset();
-        }
+        // this.mobo.cpu.writeToRAM(0x2002, [128]);
     },
 
+    /*
+        Render one scanline at a time (http://wiki.nesdev.com/w/index.php/PPU_rendering).
+    */  
+    render: function() {
+        var i = 0,
+            ppuRegister = 0;
+
+        if (this.scanline == -1) {
+            ppuRegister = this.mobo.cpu.readFromRAM(CPU.PPU_STATUS_REGISTER);
+
+            if (ppuRegister >> 7 == 1) {    // Clear PPU status register bit 7 to indicate v-blank has started (http://wiki.nesdev.com/w/index.php/PPU_registers#PPUMASK).
+                this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, ppuRegister - 128);
+            }
+
+            this.mainRenderer.removeAllObjects();
+        } else {
+            if (this.scanline > 0 && this.scanline % 8 == 0 && this.scanline <= 240) {    
+                this.renderScanline();
+            }
+
+            if (this.scanline == 240) {
+                this.renderSprites();
+                this.mainRenderer.render();
+            }
+
+            if (this.scanline == 241) {
+                ppuRegister = this.mobo.cpu.readFromRAM(CPU.PPU_STATUS_REGISTER);
+
+                if (ppuRegister >> 7 != 1) {    // Set PPU status register bit 7 to indicate v-blank has started (http://wiki.nesdev.com/w/index.php/PPU_registers#PPUMASK).
+                    this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, ppuRegister + 128);
+                }
+            }
+            
+            // Rendered a full frame. Start a new one.
+            if (this.scanline >= 262) {
+                this.nextFrame();
+                return;
+            }
+        }
+
+        this.scanline++;
+    },  
+
+    /*
+        Next frame when all pixels are rendered.
+    */
     nextFrame: function() {
+        this.cycles = 0;
+        this.scanline = -1;
+        this.tileIndex = 0;
+        this.nameTable = 0;
         this.mobo.cpu.triggerInterrupt(CPU.NMI_INTERRUPT);
     },
 
+    /*
+        Render scanline. To keeip it simple and faster, each scanline renders 32 tiles horizontally instead of rendering one pixel across the screen.
+    */  
+    renderScanline: function() {
+        var i = 0;
+
+        this.nameTable = this.getNameTableData(this.getNameTableIndex());
+
+        for (i = 0; i < this.nameTable.length; i++) {
+            tile = this.getTile(this.nameTable[i]);
+            this.mainRenderer.addObject(tile, i * 8, this.scanline - 8);
+            this.cycles += 64;
+        }
+
+        this.tileIndex += 32;
+    },
+
+    /*
+        Render sprites (http://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation).
+    */
+    renderSprites: function() {
+        var i = 0,
+            cursor = 0,
+            sramAddress = 0x00,
+            tile = '',
+            x = 0,
+            y = 0;
+
+        _.each(this.oam, function(oam, index, list) {
+            list[index] = 0xFF;
+        });
+
+        do {
+            if (this.sram.readFrom(sramAddress) <= this.scanline) {
+                this.oam[cursor] = this.sram.readFrom(sramAddress);               // Y position.
+                this.oam[cursor + 1] = this.sram.readFrom(sramAddress + 1);       // Tile index number.
+                this.oam[cursor + 2] = this.sram.readFrom(sramAddress + 2);       // Sprite attributes.
+                this.oam[cursor + 3] = this.sram.readFrom(sramAddress + 3);       // X position.
+                cursor += 4;
+            }
+
+            sramAddress += 4;
+        } while(cursor <= 60 && sramAddress < 0x100);
+
+        // Find next sprite in view to set sprite overflow flag.
+        for (i = sramAddress; i < 0x100; i+=4) {
+            if (this.sram.readFrom(i) <= this.scanline) {
+                this.spriteOverflow = true;
+                break;
+            }
+        }
+
+        for (i = 0; i < this.oam.length; i+=4) {
+            tile = this.tiles[this.oam[i + 1]];
+            x = this.oam[i + 3];
+            y = this.oam[i];
+
+            this.mainRenderer.addObject(tile, x, y);
+        } 
+    },
+
+    /*
+        Get current name table index from PPU controler regier 1 (0x2000).
+    */
+    getNameTableIndex: function() {
+        var reg = this.mobo.cpu.readFromRAM(CPU.PPU_CONTROL_REGISTER_1),
+            index = reg & 3;    // First 2 bits is index.
+
+        return index;
+    },
+
     getTile: function(index) {
-        var tile = [],
-            tileStr = '';
+        var tile = [];
 
         if (index > this.tiles.length - 1) {
             throw new Error ('Tile ' + index + ' not found.');
-        } else {
-            tile = this.tiles[index];
+        } 
+            
+        tile = this.tiles[index];
 
-            _.each(tile, function(spriteData, index) {
-                var xPos = index % 8;
-
-                if (xPos == 0 && index > 0) {
-                    tileStr += '\n';
-                } 
-
-                tileStr += spriteData;
-            });
-
-            console.log(tileStr);
-
-            return tile;
-        }
+        return tile;
     },
 
     renderTiles: function() {
-        this.tilesRenderer = new Renderer({
-            displayDevice: this.tilesDisplayDevice,
-            width: 640,
-            height: 480
-        });
+        var x = 0,
+            y = -1;
 
         _.each(this.tiles, function(tile, index) {
-            var x = index % 8 * 8;
-                y = Math.floor(index / 8) * 8;
+            x = index % 8 * 8;
 
-            this.tilesRenderer.render(tile, x, y);
+            if (x == 0) {
+                y += 8;
+            }
+
+            this.tilesRenderer.addObject(tile, x, y);
         }.bind(this));
+
+        this.tilesRenderer.render();
     },
 
     getPatternTable: function(index) {
@@ -155,7 +308,7 @@ var PPU = Class({
         return data;
     },
 
-    getNameTable: function(index) {
+    getNameTableData: function(index) {
         var address = 0x00,
             data = [];
 
@@ -163,9 +316,27 @@ var PPU = Class({
             throw new Error('Invalid name table index. ' + index);
         }
 
-        address = PPU.NAME_TABLE_SIZE * index + PPU.NAME_TABLES_START;
+        switch (index) {
+            case 0:
+                address = PPU.NAME_TABLE_0_START + (this.scanline / 8) * 32 - 32;
+            break;
 
-        for (i = address; i < address + PPU.NAME_TABLE_SIZE; i++) {
+            case 1:
+                address = PPU.NAME_TABLE_1_START;
+            break;
+
+            case 2:
+                address = PPU.NAME_TABLE_2_START;
+            break;
+
+            case 3:
+                address = PPU.NAME_TABLE_3_START;
+            break;
+
+            default:
+        }
+
+        for (i = address; i < address + 32; i++) {
             data.push(this.vram.readFrom(i));
         }
 
@@ -190,30 +361,26 @@ var PPU = Class({
     },
 
     renderNameTable: function(index) {
-        var nameTable = this.getNameTable(index),
-            tileIndex = 0,
-            i = 0,
-            j = 0,
+        var oldScanline = this.scanline,
+            nameTable = this.getNameTableData(index),
+            tile = '',
             x = 0,
-            y = 0;
-
-        this.nameTableRenderer = new Renderer({
-            displayDevice: this.nameTableDisplayDevice,
-            width: 256,
-            height: 240
-        });
+            y = -1,
+            i = 0;
         
-        console.log('Name table ' + index, nameTable);
-
-        for (i = 0; i < PPU.NAME_TABLE_HEIGHT; i++) {
-            for (j = 0; j < PPU.NAME_TABLE_WIDTH; j++) {
-                tile = this.tiles[nameTable[tileIndex]];
-                x = tileIndex % 8 * 8;
-                y = Math.floor(tileIndex / 8) * 8;
-                this.nameTableRenderer.render(tile, x, y);
-                tileIndex++;    
+        for (i = 0; i < nameTable.length; i++) {
+            tile = this.tiles[nameTable[i]];
+            x = i % 32;
+            
+            if (x == 0) {
+                y++;
             }
-        }        
+
+            this.nameTableRenderer.addObject(tile, x * 8, y * 8);
+        }      
+
+        this.nameTableRenderer.render();
+        this.scanline = oldScanline;
     },
 
     setSRAMaddress: function(data) {
@@ -238,8 +405,8 @@ var PPU = Class({
     writeIOToVRAM: function(data) {
         this.vram.writeTo(this.vramIOaddress, data);
 
-        // Read ppu controler register #1 (0x2000) bit 2 to increase vram address by 1 or 32.
-        this.vramIOaddress += ((this.mobo.cpu.readFromRAM(0x2000) >> 2 & 1) == 0 ? 1 : 32);
+        // Read PPU controler register #1 (0x2000) bit 2 to increase VRAM address by 1 or 32.
+        this.vramIOaddress += ((this.mobo.cpu.readFromRAM(CPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
     },
 
     dump: function() {
@@ -351,17 +518,21 @@ var Renderer = Class({
     },
 
     constructor: function(options) {
-        var settings = {
-                view: false,
-                transparent: false,
-                antialias: false,
-                preserveDrawingBuffer: false,
-                resolution: 1
-            };
-
         this.displayDevice = options.displayDevice;
         this.width = options.width;
         this.height = options.height;
+        this.renderer = null;
+        this.stage = null;
+    },
+
+    load: function() {
+        var settings = {
+            view: false,
+            transparent: false,
+            antialias: false,
+            preserveDrawingBuffer: false,
+            resolution: 1
+        };
 
         // Create the renderer.
         this.renderer = PIXI.autoDetectRenderer(this.width, this.height, settings);
@@ -373,16 +544,12 @@ var Renderer = Class({
         this.stage = new PIXI.Container();
     },
 
-    load: function() {
-        this.reset();
-    },
-
     reset: function() {
         this.stage.destroy(true);
         this.renderer.destroy(true);
     },
 
-    render: function(graphData, x, y) {
+    addObject: function(graphData, x, y) {
         var pixels = new PIXI.Graphics(),
             dimensions = Math.sqrt(graphData.length),
             pixelDimension = 1;
@@ -403,6 +570,17 @@ var Renderer = Class({
         pixels.endFill(); 
 
         this.stage.addChild(pixels);
+    },
+
+    removeObject: function(index) {
+        this.stage.removeChildAt(index);
+    },
+
+    removeAllObjects: function() {
+        this.stage.removeChildren();
+    },
+
+    render: function() {
         this.renderer.render(this.stage);
     }
 });

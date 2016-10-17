@@ -110,11 +110,12 @@ var ROM = Class({
     mapMemory: function() {
         try {
             this.mmc = eval('new MMC' + this.nibbleMapper + '(this.mobo)');
-            this.mmc.load();
         } catch(e) {
             console.log ('Mapper not implemented.', this.nibbleMapper);
             throw e;
         }
+
+        this.mmc.load();
     },
 
     readPRG: function(bank) {

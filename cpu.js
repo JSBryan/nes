@@ -2,8 +2,8 @@ var CPU = Class({
     $const: {
         PROGRAM_COUNTER_START_HIGH_BITS: 0xFFFD,        // Vector memory address that holds value for where program starts.
         PROGRAM_COUNTER_START_LOW_BITS: 0xFFFC,
-        STACK_POINTER_START: 0x01FF,                    // Stack pointer address, store in the order from top to bottom in NES.
-        STACK_POINTER_END: 0x0100,                      // Stack starting address in memory also acts as an offset.
+        STACK_POINTER_START: 0x1FF,                    // Stack pointer address, store in the order from top to bottom in NES.
+        STACK_POINTER_END: 0x100,                      // Stack starting address in memory also acts as an offset.
         ADDR_MODE_ZERO_PAGE: 'Zero Page',               // Memory address modes (http://nesdev.com/NESDoc.pdf, Appendix E).
         ADDR_MODE_ZERO_PAGE_X: 'Zero Page X',
         ADDR_MODE_ZERO_PAGE_Y: 'Zero Page Y',
@@ -18,7 +18,15 @@ var CPU = Class({
         ADDR_MODE_INDEXED_INDIRECT: 'Indexed Indirect',
         ADDR_MODE_INDIRECT_INDEXED: 'Indirect Indexed',
         PPU_CONTROL_REGISTER_1: 0x2000,
-        NMI_INTERRUPT: 'nmi interrupt'                  // NMI interrupt, occurs at start of v-blank by PPU.
+        PPU_MASK_REGISTER: 0x2001,
+        PPU_STATUS_REGISTER: 0x2002,
+        PPU_OAM_ADDR_REGISTER: 0x2003,
+        PPU_OAM_DATA_REGISTER: 0x2004,
+        PPU_SCROLL_REGISTER: 0x2005,
+        PPU_ADDR_REGISTER: 0x2006,
+        PPU_DATA_REGISTER: 0x2007,
+        PPU_OAM_DMA_REGISTER: 0x4014,
+        NMI_INTERRUPT: 'NMI interrupt'                  // NMI interrupt, occurs at start of v-blank by PPU.
     },
 
     ops: _.range(255),
@@ -44,7 +52,12 @@ var CPU = Class({
 
         this.isInterrupted = null;  // Interrupted flag.
         this.interruptType = null;  // Interrupt type (NMI, IRQ and reset).
+        this.interruptedAddress = 0x00;     // Interrupted program counter address.
         this.stackTrace = [];
+        this.cycles = 0;
+        this.poweredUp = false;
+        this.instructions = 0;
+        this.isNewFrame = false;
     },
 
     load: function() {
@@ -360,31 +373,65 @@ var CPU = Class({
         this.carry_flag = 0;                // Processor carry status flag (bit 0).
         this.isInterrupted = false;
         this.interruptType = null;
+        this.interruptedAddress = 0x00;
         this.mobo.ram.writeTo(0x4017, [0x00]);  // Frame IRQ enabled.
         this.mobo.ram.writeTo(0x4015, [0x00]);  // All channels disabled.
 
         this.stackTrace.length = 0;
+        this.poweredUp = false;
+        this.instructions = 0;
+        this.isNewFrame = false;
     },
 
     pushStack: function(data) {
         this.writeToRAM(this.sp_reg, [data]);
         this.sp_reg--;
+
+        if (this.sp_reg < CPU.STACK_POINTER_END) {
+            this.sp_reg = CPU.STACK_POINTER_START - (CPU.STACK_POINTER_END - this.sp_reg) ;
+        }
     },
 
     popStack: function() {
         var val = 0x00;
 
         this.sp_reg++;
+        this.sp_reg &= CPU.STACK_POINTER_START;
+
+        if (this.sp_reg < CPU.STACK_POINTER_END) {
+            this.sp_reg += CPU.STACK_POINTER_END;
+        }
+
         val = this.mobo.ram.readFrom(this.sp_reg);
 
         return val;
+    },
+
+    getStack: function() {
+        var i = 0,
+            data = [];
+
+        for (i = CPU.STACK_POINTER_START; i > CPU.STACK_POINTER_END; i--) {
+            data.push(this.readFromRAM(i));
+        }
+
+        return data;
     },
 
     /*
         Write data to cpu memory and IOs.
     */
     writeToRAM: function(address, data) {
-        var i = 0;
+        var i = 0,
+            dmaAddress = 0x00,
+            dmaData = [];
+
+        // Ignore write to the following register if earlier than ~29658 CPU cycles after reset (https://wiki.nesdev.com/w/index.php/PPU_power_up_state).
+        if (!this.poweredUp) {  
+            if (address == CPU.PPU_CONTROL_REGISTER_1 || address == CPU.PPU_MASK_REGISTER || address == CPU.PPU_SCROLL_REGISTER || address == CPU.PPU_ADDR_REGISTER) {
+                return;
+            }
+        }
 
         this.mobo.ram.writeTo(address, data);
 
@@ -403,20 +450,32 @@ var CPU = Class({
         }
 
         switch (address) {
-            case 0x2003:    // SPR-RAM address register (w).
+            case CPU.PPU_OAM_ADDR_REGISTER:    // SPR-RAM address register (w).
                 this.mobo.ppu.setSRAMaddress(data[0]);
             break;
 
-            case 0x2004:    // SPR-RAM I/O register (rw).
+            case CPU.PPU_OAM_DATA_REGISTER:    // SPR-RAM I/O register (rw).
                 this.mobo.ppu.writeToSRAM(data);
             break;
 
-            case 0x2006:
+            case CPU.PPU_ADDR_REGISTER:
                 this.mobo.ppu.setVRAMaddress(data[0]);
             break;
 
-            case 0x2007:
+            case CPU.PPU_DATA_REGISTER:    
                 this.mobo.ppu.writeIOToVRAM(data);
+
+            break;
+
+            case CPU.PPU_OAM_DMA_REGISTER:    // DMA copy (w).
+                dmaAddress = data[0] * 0x100;
+
+                for (i = 0; i < 256; i++) {
+                    dmaData.push(this.readFromRAM(i + dmaAddress));
+                }
+
+                this.mobo.ppu.writeToSRAM(dmaData);
+                this.cycles += 512;
             break;
 
             default:
@@ -431,41 +490,72 @@ var CPU = Class({
     },
 
     /*
-        Main loop.
+        Emulate CPU instructions.
     */
-    run: function() {
-        var i = 0;
-
+    emulate: function() {
         try {
-            // for (;;) {
-            for (i = 0; i < 108216; i++) {
-                var opCode = this.mobo.ram.readFrom(this.pc_reg),
-                    op = this.ops[opCode],
-                    opInstance = null,
-                    operandAddr = null;
+            var opCode = this.mobo.ram.readFrom(this.pc_reg),
+                op = this.ops[opCode],
+                opInstance = null;
 
-                if (_.isObject(op)) {
-                    this.stackTrace.push({
-                        debug_runningAddress: this.pc_reg,
-                        debug_x_reg: this.x_reg,
-                        debug_y_reg: this.y_reg,
-                        debug_acc_reg: this.acc_reg,
-                        debug_sp_reg: this.sp_reg - CPU.STACK_POINTER_END,
-                        debug_ps_reg: this.getProcessorStatusRegister()
-                    });
-
-                    this.mobo.ppu.nextFrame();
-                    opInstance = this.opInstances[op.instruction];
-                    opInstance.setOp(op);
-                    opInstance.execute();
-                    opInstance.dump();
-                    this.checkInterrupt();
-                } else {
-                    throw new Error('Op code ' + opCode + ' not implemented.');
-                }
+            if (_.isObject(op)) {
+                this.stackTrace.push({
+                    debug_runningAddress: this.pc_reg,
+                    debug_x_reg: this.x_reg,
+                    debug_y_reg: this.y_reg,
+                    debug_acc_reg: this.acc_reg,
+                    debug_sp_reg: this.sp_reg - CPU.STACK_POINTER_END,
+                    debug_ps_reg: this.getProcessorStatusRegister(),
+                    debug_cycles: this.cycles,
+                    debug_instructions: this.instructions
+                });
+                
+                opInstance = this.opInstances[op.instruction];
+                opInstance.setOp(op);
+                opInstance.execute();
+                this.instructions++;
+                // opInstance.dump();
+                this.checkInterrupt();
+            } else {
+                throw new Error('Op code ' + opCode + ' not implemented.');
             }
         } catch(e) {
             throw e;
+        }
+    },
+
+    /*
+        Main loop.
+    */
+    run: function() { 
+        // Powering up NES.
+        if (!this.poweredUp) {
+            while (this.cycles < 29658) {
+                this.emulate();
+            }
+
+            this.poweredUp = true;
+            this.cycles = 0;
+        }
+
+        for (;;) {
+            if (this.isNewFrame) {
+                this.isNewFrame = false;
+                setTimeout(this.run.bind(this), 16.66);
+                break;
+            }
+
+            this.emulate();
+
+            if (this.interruptType) {
+
+            } else {
+                // Render one scanline and reset CPU cycles if it is more than one PPU scanline cycles.
+                if (this.cycles >= PPU.CPU_CYCLES_PER_SCANLINE) {
+                    this.mobo.ppu.render();
+                    this.cycles = 0;
+                } 
+            }
         }
     },
 
@@ -480,7 +570,8 @@ var CPU = Class({
                 if (register >> 7 & 1 == 1) {
                     this.isInterrupted = true;
                     this.interruptType = CPU.NMI_INTERRUPT;
-                    this.writeToRAM(CPU.PPU_CONTROL_REGISTER_1, [register - 128]);
+                    this.interruptedAddress = this.pc_reg;
+                    this.isNewFrame = true;
                 }
             break;
 
@@ -493,8 +584,8 @@ var CPU = Class({
             highBitsAddress = 0x00;
 
         if (this.isInterrupted) {
-            this.pushStack(this.pc_reg >> 8);       // Returning address high bits.
-            this.pushStack(this.pc_reg & 0xFF);     // Returning address low bits.
+            this.pushStack(this.interruptedAddress >> 8);       // Returning address high bits.
+            this.pushStack(this.interruptedAddress & 0xFF);     // Returning address low bits.
             this.pushStack(this.getProcessorStatusRegister());
 
             switch (this.interruptType) {
@@ -542,9 +633,11 @@ var Op = Class({
         this.op = null;
     },
 
-    execute: function() {
+    execute: function() {  
         this.getOperand();
+        this.cpu.cycles += this.op.cycles;
         this.cpu.pc_reg += this.op.bytes;    // Default to increase program counter register by the size of instruction.
+            
     },
 
     setOp: function(op) {
@@ -583,14 +676,26 @@ var Op = Class({
             break;
 
             case CPU.ADDR_MODE_ABSOLUTE_X:
-                this.operandAddr = (firstOperand | secondOperand << 8) + this.cpu.x_reg;
+                temp = (firstOperand | secondOperand << 8);
+                this.operandAddr = temp + this.cpu.x_reg;
                 this.operandAddr &= 0xFFFF;
+
+                if (temp >> 8 != this.operandAddr >> 8) {
+                    this.cpu.cycles++;
+                } 
+
                 this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_ABSOLUTE_Y:
-                this.operandAddr = (firstOperand | secondOperand << 8) + this.cpu.y_reg;
+                temp = (firstOperand | secondOperand << 8);
+                this.operandAddr = temp + this.cpu.y_reg;
                 this.operandAddr &= 0xFFFF;
+
+                if (temp >> 8 != this.operandAddr >> 8) {
+                    this.cpu.cycles++;
+                }
+
                 this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
             break;
 
@@ -642,8 +747,14 @@ var Op = Class({
                 this.operandAddr = firstOperand;
                 firstOperand = this.cpu.mobo.ram.readFrom(this.operandAddr);
                 secondOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + 1) & 0xFF);
-                this.operandAddr = (firstOperand | secondOperand << 8) + this.cpu.y_reg;
+                temp = (firstOperand | secondOperand << 8);
+                this.operandAddr = temp + this.cpu.y_reg;
                 this.operandAddr &= 0xFFFF;
+
+                if (temp >> 8 != this.operandAddr >> 8) {
+                    this.cpu.cycles++;
+                }
+
                 this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
             break;
 
@@ -661,9 +772,11 @@ var Op = Class({
             spaces = new Array(40 - (runningAddress.length + instruction.length + operand.length + addrMode.length)).toString().replace(/,/g, ' '),
             accu = (trace.debug_acc_reg).toString(16).toUpperCase(),
             x = (trace.debug_x_reg).toString(16).toUpperCase(),
-            y = (trace.debug_y_reg).toString(16).toUpperCase();
+            y = (trace.debug_y_reg).toString(16).toUpperCase(),
+            cycles = trace.debug_cycles * 3 + '';    // PPU ouputs three cycles/dots per CPU cycle.
 
         runningAddress = '0000'.substr(runningAddress.length) + runningAddress;
+        cycles = '   '.substr(cycles.length) + cycles;
 
         if (accu.length < 2) {
             accu = 0 + accu;
@@ -677,10 +790,10 @@ var Op = Class({
             y = 0 + y;
         }
 
-        console.log(runningAddress, instruction, operand, addrMode, spaces, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase());
+        console.log(runningAddress, instruction, operand, addrMode, spaces, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase(), 'Instruction:' + trace.debug_instructions);
         
         // To compare with http://www.qmtpro.com/~nes/misc/nestest.log file.
-        // console.log(runningAddress, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase());
+        // console.log(runningAddress, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase(), 'CYC:' + cycles);
     }
 });
 
@@ -751,6 +864,12 @@ var BCCop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (!this.cpu.carry_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -765,6 +884,12 @@ var BCSop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (this.cpu.carry_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+            
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -779,6 +904,12 @@ var BEQop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (this.cpu.zero_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -807,6 +938,12 @@ var BMIop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (this.cpu.negative_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -821,6 +958,12 @@ var BNEop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (!this.cpu.zero_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -835,6 +978,12 @@ var BPLop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (!this.cpu.negative_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -873,6 +1022,12 @@ var BVCop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (!this.cpu.overflow_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -887,6 +1042,12 @@ var BVSop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         if (this.cpu.overflow_flag) {
+            if (this.cpu.pc_reg >> 8 == this.operandAddr >> 8) {
+                this.cpu.cycles++;
+            } else {
+                this.cpu.cycles += 2;
+            }
+
             this.cpu.pc_reg = this.operandAddr;
         }
     }
@@ -1112,7 +1273,7 @@ var JSRop = Class(Op, {
 
         // http://wiki.nesdev.com/w/index.php/RTS_Trick
         this.cpu.pushStack((this.cpu.pc_reg - 1) >> 8 & 0xFF);     // High bits.
-        this.cpu.pushStack((this.cpu.pc_reg  -1 ) & 0xFF);         // Low bits.
+        this.cpu.pushStack((this.cpu.pc_reg - 1) & 0xFF);         // Low bits.
         this.cpu.pc_reg = this.operandAddr;
     }
 });
@@ -1335,7 +1496,8 @@ var RTIop = Class(Op, {
         this.cpu.setProcessStatusRegister(this.cpu.popStack());
         this.cpu.pc_reg = this.cpu.popStack();
         this.cpu.pc_reg += this.cpu.popStack() << 8;    
-        this.cpu.isInterrupted = false;
+        this.cpu.interruptType = null;
+        this.cpu.interruptedAddress = 0x00;
     }
 });
 
@@ -1348,8 +1510,8 @@ var RTSop = Class(Op, {
         BRKop.$superp.execute.call(this);
 
         // http://wiki.nesdev.com/w/index.php/RTS_Trick
-        this.cpu.pc_reg = this.cpu.popStack();
-        this.cpu.pc_reg += this.cpu.popStack() << 8;    // Combine both low bits and high bits into a 16-bits value. See JSRop.
+        this.cpu.pc_reg = this.cpu.popStack();                             // Low bits.
+        this.cpu.pc_reg = this.cpu.pc_reg + (this.cpu.popStack() << 8);    // Hight bits. Combine both low bits and high bits into a 16-bits value. See JSRop.
         this.cpu.pc_reg++;
     }
 });
