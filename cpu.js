@@ -2,8 +2,8 @@ var CPU = Class({
     $const: {
         PROGRAM_COUNTER_START_HIGH_BITS: 0xFFFD,        // Vector memory address that holds value for where program starts.
         PROGRAM_COUNTER_START_LOW_BITS: 0xFFFC,
-        STACK_POINTER_START: 0x1FF,                    // Stack pointer address, store in the order from top to bottom in NES.
-        STACK_POINTER_END: 0x100,                      // Stack starting address in memory also acts as an offset.
+        STACK_POINTER_START: 0x1FF,                     // Stack pointer address, store in the order from top to bottom in NES.
+        STACK_POINTER_END: 0x100,                       // Stack starting address in memory also acts as an offset.
         ADDR_MODE_ZERO_PAGE: 'Zero Page',               // Memory address modes (http://nesdev.com/NESDoc.pdf, Appendix E).
         ADDR_MODE_ZERO_PAGE_X: 'Zero Page X',
         ADDR_MODE_ZERO_PAGE_Y: 'Zero Page Y',
@@ -26,6 +26,8 @@ var CPU = Class({
         PPU_ADDR_REGISTER: 0x2006,
         PPU_DATA_REGISTER: 0x2007,
         PPU_OAM_DMA_REGISTER: 0x4014,
+        CONTROLLER_1_REGISTER: 0x4016,
+        CONTROLLER_2_REGISTER: 0x4017,
         NMI_INTERRUPT: 'NMI interrupt'                  // NMI interrupt, occurs at start of v-blank by PPU.
     },
 
@@ -381,6 +383,7 @@ var CPU = Class({
         this.poweredUp = false;
         this.instructions = 0;
         this.isNewFrame = false;
+        this.cycles = 0;
     },
 
     pushStack: function(data) {
@@ -424,7 +427,8 @@ var CPU = Class({
     writeToRAM: function(address, data) {
         var i = 0,
             dmaAddress = 0x00,
-            dmaData = [];
+            dmaData = [],
+            oldValue = 0;
 
         // Ignore write to the following register if earlier than ~29658 CPU cycles after reset (https://wiki.nesdev.com/w/index.php/PPU_power_up_state).
         if (!this.poweredUp) {  
@@ -433,6 +437,7 @@ var CPU = Class({
             }
         }
 
+        oldValue = this.mobo.ram.readFrom(address);
         this.mobo.ram.writeTo(address, data);
 
         // Mirror three times if it is zero page (from 0x0000 to 0x0100);
@@ -464,7 +469,6 @@ var CPU = Class({
 
             case CPU.PPU_DATA_REGISTER:    
                 this.mobo.ppu.writeIOToVRAM(data);
-
             break;
 
             case CPU.PPU_OAM_DMA_REGISTER:    // DMA copy (w).
@@ -478,6 +482,12 @@ var CPU = Class({
                 this.cycles += 512;
             break;
 
+            case CPU.CONTROLLER_1_REGISTER:     // Controller 1 register. A 1/0 write sequence (https://wiki.nesdev.com/w/index.php/Standard_controller).
+                if (oldValue == 1 && data[0] == 0) {
+                    this.mobo.controller1.reset();
+                }
+            break;
+
             default:
         };
     },
@@ -486,6 +496,14 @@ var CPU = Class({
         Allow cpu memory access from ppu.
     */
     readFromRAM: function(address) {
+        switch (address) {
+            case CPU.CONTROLLER_1_REGISTER:
+                return this.mobo.controller1.getNextInput();
+            break;
+
+            default:
+        }
+        
         return this.mobo.ram.readFrom(address);
     },
 
@@ -499,23 +517,23 @@ var CPU = Class({
                 opInstance = null;
 
             if (_.isObject(op)) {
-                this.stackTrace.push({
-                    debug_runningAddress: this.pc_reg,
-                    debug_x_reg: this.x_reg,
-                    debug_y_reg: this.y_reg,
-                    debug_acc_reg: this.acc_reg,
-                    debug_sp_reg: this.sp_reg - CPU.STACK_POINTER_END,
-                    debug_ps_reg: this.getProcessorStatusRegister(),
-                    debug_cycles: this.cycles,
-                    debug_instructions: this.instructions
-                });
+                // this.stackTrace.push({
+                //     debug_runningAddress: this.pc_reg,
+                //     debug_x_reg: this.x_reg,
+                //     debug_y_reg: this.y_reg,
+                //     debug_acc_reg: this.acc_reg,
+                //     debug_sp_reg: this.sp_reg - CPU.STACK_POINTER_END,
+                //     debug_ps_reg: this.getProcessorStatusRegister(),
+                //     debug_cycles: this.cycles,
+                //     debug_instructions: this.instructions
+                // });
                 
                 opInstance = this.opInstances[op.instruction];
                 opInstance.setOp(op);
                 opInstance.execute();
-                this.instructions++;
+                // this.instructions++;
                 // opInstance.dump();
-                this.checkInterrupt();
+
             } else {
                 throw new Error('Op code ' + opCode + ' not implemented.');
             }
@@ -545,20 +563,31 @@ var CPU = Class({
                 break;
             }
 
+            this.checkInterrupt();
             this.emulate();
 
-            if (this.interruptType) {
+            // this.writeToRAM(CPU.CONTROLLER_1_REGISTER, [this.mobo.controller1.getNextInput()]);
 
+            if (this.interruptType) {
+                // if (this.instructions > 10000) {this.writeToRAM(CPU.CONTROLLER_1_REGISTER, [this.mobo.controller1.getNextInput()]);484
+                //     this.instructions = 0;
+                //     setTimeout(this.run.bind(this), 16.66);
+                //     break;
+                // }
             } else {
+                // this.instructions = 0;
                 // Render one scanline and reset CPU cycles if it is more than one PPU scanline cycles.
                 if (this.cycles >= PPU.CPU_CYCLES_PER_SCANLINE) {
                     this.mobo.ppu.render();
-                    this.cycles = 0;
+                    this.cycles = 0                
                 } 
             }
         }
     },
 
+    /*
+        Use to trigger an interrupt.
+    */  
     triggerInterrupt: function(type) {
         var register = 0;
 
@@ -579,6 +608,9 @@ var CPU = Class({
         }
     },
 
+    /*
+        Check to see if a interrupted has triggered and jump to interrupt vector address.
+    */
     checkInterrupt: function() {
         var lowBitsAddress = 0x00,
             highBitsAddress = 0x00;
@@ -646,8 +678,8 @@ var Op = Class({
 
     getOperand: function() {
         var temp = 0x00,
-            firstOperand = this.cpu.mobo.ram.readFrom(this.cpu.pc_reg + 1),     // First operand after op code.
-            secondOperand = this.cpu.mobo.ram.readFrom(this.cpu.pc_reg + 2),    // Second operand after first operand if any.
+            firstOperand = this.cpu.readFromRAM(this.cpu.pc_reg + 1),     // First operand after op code.
+            secondOperand = this.cpu.readFromRAM(this.cpu.pc_reg + 2),    // Second operand after first operand if any.
             address16Bits = 0x0000,     // Use to combine two 8 bits value into one 16 bits value.
             signedByte = 0x00;          // Signed byte converted from an unsigned byte.
 
@@ -655,24 +687,24 @@ var Op = Class({
         switch (this.op.addrMode) {
             case CPU.ADDR_MODE_ZERO_PAGE:
                 this.operandAddr = firstOperand;
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_ZERO_PAGE_X:
                 this.operandAddr = firstOperand + this.cpu.x_reg;
                 this.operandAddr &= 0xFF;
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr) & 0xFF;
+                this.operand = this.cpu.readFromRAM(this.operandAddr) & 0xFF;
             break;  
 
             case CPU.ADDR_MODE_ZERO_PAGE_Y:
                 this.operandAddr = firstOperand + this.cpu.y_reg;
                 this.operandAddr &= 0xFF;
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr) & 0xFF;
+                this.operand = this.cpu.readFromRAM(this.operandAddr) & 0xFF;
             break;  
 
             case CPU.ADDR_MODE_ABSOLUTE:
                 this.operandAddr = firstOperand | secondOperand << 8;
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_ABSOLUTE_X:
@@ -684,7 +716,7 @@ var Op = Class({
                     this.cpu.cycles++;
                 } 
 
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_ABSOLUTE_Y:
@@ -696,7 +728,7 @@ var Op = Class({
                     this.cpu.cycles++;
                 }
 
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_INDIRECT:
@@ -705,12 +737,12 @@ var Op = Class({
                 if (firstOperand == 0xFF) {     // Bug in original CPU workaround (http://obelisk.me.uk/6502/reference.html#JSR).
                     this.operandAddr = address16Bits + 1;
                 } else {
-                    firstOperand = this.cpu.mobo.ram.readFrom(address16Bits);
-                    secondOperand = this.cpu.mobo.ram.readFrom(address16Bits + 1);
+                    firstOperand = this.cpu.readFromRAM(address16Bits);
+                    secondOperand = this.cpu.readFromRAM(address16Bits + 1);
                     this.operandAddr = firstOperand | secondOperand << 8;
                 }
 
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_IMPLIED:
@@ -736,17 +768,17 @@ var Op = Class({
 
             case CPU.ADDR_MODE_INDEXED_INDIRECT:
                 this.operandAddr = firstOperand;
-                firstOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + this.cpu.x_reg) & 0xFF);
-                secondOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + this.cpu.x_reg + 1) & 0xFF);
+                firstOperand = this.cpu.readFromRAM((this.operandAddr + this.cpu.x_reg) & 0xFF);
+                secondOperand = this.cpu.readFromRAM((this.operandAddr + this.cpu.x_reg + 1) & 0xFF);
                 this.operandAddr = firstOperand | secondOperand << 8;
                 this.operandAddr &= 0xFFFF;
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             case CPU.ADDR_MODE_INDIRECT_INDEXED:
                 this.operandAddr = firstOperand;
-                firstOperand = this.cpu.mobo.ram.readFrom(this.operandAddr);
-                secondOperand = this.cpu.mobo.ram.readFrom((this.operandAddr + 1) & 0xFF);
+                firstOperand = this.cpu.readFromRAM(this.operandAddr);
+                secondOperand = this.cpu.readFromRAM((this.operandAddr + 1) & 0xFF);
                 temp = (firstOperand | secondOperand << 8);
                 this.operandAddr = temp + this.cpu.y_reg;
                 this.operandAddr &= 0xFFFF;
@@ -755,7 +787,7 @@ var Op = Class({
                     this.cpu.cycles++;
                 }
 
-                this.operand = this.cpu.mobo.ram.readFrom(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr);
             break;
 
             default:
@@ -1498,6 +1530,7 @@ var RTIop = Class(Op, {
         this.cpu.pc_reg += this.cpu.popStack() << 8;    
         this.cpu.interruptType = null;
         this.cpu.interruptedAddress = 0x00;
+        this.cpu.cycles = 0;
     }
 });
 

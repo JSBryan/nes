@@ -38,7 +38,11 @@ var Mobo = Class({
 						self.ppu.load();
 						self.rom.load();
 						self.cpu.load();
-					
+
+						self.controller1 = new Controller({mobo: self, port: 0x4016, displayDevice: $('#mainDisplay').children('canvas').get(0)});
+        				self.controller2 = new Controller({mobo: self, port: 0x4017, displayDevice: $('#mainDisplay').children('canvas').get(0)});
+						self.controller1.load();
+
 						self.cpu.run();
 					} catch(e) {
 						console.log(e.message);
