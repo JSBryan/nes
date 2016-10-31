@@ -37,12 +37,12 @@ var ROM = Class({
             this.batteryRAM = (this.rom[6] >> 1 == 1);
             this.hasTrainer = (this.rom[6] >> 2 == 1);
             this.lowerNibbleMapper = this.rom[6] >> 4;
-            this.upperNibbleMapper = this.rom[7] & 0xF;
-            this.nibbleMapper = this.lowerNibbleMapper | this.upperNibbleMapper;
+            this.upperNibbleMapper = this.rom[7] >> 4;
+            this.nibbleMapper = this.lowerNibbleMapper | this.upperNibbleMapper << 4;
             this.loadPRG();
             this.loadCHR();
-            this.mapMemory();
             this.dump();
+            this.mapMemory();
         } catch(e) {
             throw e;
         }
@@ -108,8 +108,13 @@ var ROM = Class({
     },
 
     mapMemory: function() {
+        var options = {
+                mobo: this.mobo,
+                rom: this
+            };
+
         try {
-            this.mmc = eval('new MMC' + this.nibbleMapper + '(this.mobo)');
+            this.mmc = eval('new MMC' + this.nibbleMapper + '(options)');
         } catch(e) {
             console.log ('Mapper not implemented.', this.nibbleMapper);
             throw e;

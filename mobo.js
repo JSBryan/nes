@@ -18,7 +18,7 @@ var Mobo = Class({
 
         this.cpu = new CPU({mobo: this});
         this.ram = new RAM({mobo: this});
-        this.ppu = new PPU({mobo: this, mainDisplayDevice: $('#mainDisplay'), tilesDisplayDevice: $('#tilesDisplay'), nameTableDisplayDevice: $('#nameTableDisplay')});
+        this.ppu = new PPU({mobo: this, mainDisplayDevice: $('#mainDisplay'), tilesDisplayDevice: $('#tilesDisplay'), nameTableDisplayDevice: $('#nameTableDisplay'), paletteDisplayDevice: $('#paletteDisplay')});
 
 	    cartridge.on('change', function(e) {
 	      	var file = this.files[0],

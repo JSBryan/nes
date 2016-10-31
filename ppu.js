@@ -5,6 +5,8 @@ var PPU = Class({
         V_RAM_SIZE: 0x10000,                    // 64KB.              
         PATTERN_TABLES_START: 0x0000,
         PATTERN_TABLE_SIZE: 0x1000,
+        PATTERN_TABLE_0_START: 0x0000,
+        PATTERN_TABLE_1_START: 0x1000,
         NAME_TABLE_SIZE: 0x3C0,
         NAME_TABLE_0_START: 0x2000,
         NAME_TABLE_1_START: 0x2400,
@@ -21,22 +23,30 @@ var PPU = Class({
         IMAGE_PALETTE_1_START: 0x3F04,
         IMAGE_PALETTE_2_START: 0x3F08,
         IMAGE_PALETTE_3_START: 0x3F0C,
-        PALETTES_START: 0x3F00,
         SPRITE_PALETTE_0_START: 0x3F10,
         SPRITE_PALETTE_1_START: 0x3F14,
         SPRITE_PALETTE_2_START: 0x3F18,
         SPRITE_PALETTE_3_START: 0x3F1C,
-        CPU_CYCLES_PER_SCANLINE: 113.667        // Number of CPU cycles per NES scanline.
+        CPU_CYCLES_PER_SCANLINE: 113.667,        // Number of CPU cycles per NES scanline.
+        PPU_CONTROL_REGISTER_1: 0x2000,
+        PPU_MASK_REGISTER: 0x2001,
+        PPU_STATUS_REGISTER: 0x2002,
+        PPU_OAM_ADDR_REGISTER: 0x2003,
+        PPU_OAM_DATA_REGISTER: 0x2004,
+        PPU_SCROLL_REGISTER: 0x2005,
+        PPU_ADDR_REGISTER: 0x2006,
+        PPU_DATA_REGISTER: 0x2007
     },
 
-    // Palette from http://nesdev.com/pal.txt
-    palette: ["117 117 117", "39 27 143", "0 0 171", "71 0 159", "143 0 119", "171 0 19", "167 0 0", "127 11 0", "67 47 0", "0 71 0", "0 81 0", "0 63 23", "27 63 95", "0 0 0", "0 0 0", "0 0 0", "188 188 188", "0 115 239", "35 59 239", "131 0 243", "191 0 191", "231 0 91", "219 43 0", "203 79 15", "139 115 0", "0 151 0", "0 171 0", "0 147 59", "0 131 139", "0 0 0", "0 0 0", "0 0 0", "255 255 255", "63 191 255", "95 151 255", "167 139 253", "247 123 255", "255 119 183", "255 119 99", "255 155 59", "243 191 63", "131 211 19", "79 223 75", "88 248 152", "0 235 219", "0 0 0", "0 0 0", "0 0 0", "255 255 255", "171 231 255", "199 215 255", "215 203 255", "255 199 255", "255 199 219", "255 191 179", "255 219 171", "255 231 163", "227 255 163", "171 243 191", "179 255 207", "159 255 243", "0 0 0", "0 0 0", "0 0 0"],
+    // Palette from http://nesdev.com/pal.txt. Converted to rgb.
+    palette: ["7697781","2562959","171","4653215","9371767","11206675","10944512","8325888","4402944","18176","20736","16151","1785695","0","0","0","12369084","29679","2309103","8585459","12517567","15138907","14363392","13324047","9138944","38656","43776","37691","33675","0","0","0","16777215","4177919","6264831","10980349","16219135","16742327","16742243","16751419","15974207","8639251","5234507","5830808","60379","0","0","0","16777215","11266047","13096959","14142463","16762879","16762843","16760755","16767915","16770979","14942115","11269055","11796431","10485747","0","0","0"],
 
     constructor: function(options) {
         this.mobo = options.mobo;
         this.mainDisplayDevice = options.mainDisplayDevice;
         this.tilesDisplayDevice = options.tilesDisplayDevice;
         this.nameTableDisplayDevice = options.nameTableDisplayDevice;
+        this.paletteDisplayDevice = options.paletteDisplayDevice;
         this.vram = new VRAM();                         // Video RAM.
         this.sram = new SRAM();                         // Sprite RAM.
         this.oam = new Array(64);                       // 64 sprites to be rendered.
@@ -44,15 +54,18 @@ var PPU = Class({
         this.mainRenderer = null;
         this.tilesRenderer = null;
         this.nameTableRenderer = null;
+        this.paletteRenderer= null;
         this.sramAddress = 0x00;
         this.vramIOaddress = 0x00;
-        this.vramIOAddressHighBits = 0x00;
-        this.vramIOAddressLowBits = 0x00;
+        this.vramIOAddressHighBits = -1;
+        this.vramIOAddressLowBits = -1;
         this.cycles = 0;
         this.scanline = -1;
         this.tileIndex = 0;                             // Current tile index in name table.
         this.spriteOverflow = false;
         this.patternTableIndex = 0;
+        this.vblank = false;                            // Is it in v-blank?
+        this.sramWritten = false;                       // Has sprite RAM been written?
     },
 
     load: function() {
@@ -65,73 +78,130 @@ var PPU = Class({
             height: 480,
             focus: true
         });
-        
         this.mainRenderer.load();
 
-        this.tilesRenderer = new Renderer({
-            displayDevice: this.tilesDisplayDevice,
-            width: 640,
-            height: 480,
-            focus: false
-        });
-        this.tilesRenderer.load();
+        // this.tilesRenderer = new Renderer({
+        //     displayDevice: this.tilesDisplayDevice,
+        //     width: 640,
+        //     height: 480,
+        //     focus: false
+        // });
+        // this.tilesRenderer.load();
 
-        this.nameTableRenderer = new Renderer({
-            displayDevice: this.nameTableDisplayDevice,
-            width: PPU.NAME_TABLE_WIDTH * 8,
-            height: PPU.NAME_TABLE_HEIGHT * 8,
-            focus: false
-        });
-        this.nameTableRenderer.load();
+        // this.nameTableRenderer = new Renderer({
+        //     displayDevice: this.nameTableDisplayDevice,
+        //     width: PPU.NAME_TABLE_WIDTH * 8,
+        //     height: PPU.NAME_TABLE_HEIGHT * 8,
+        //     focus: false
+        // });
+        // this.nameTableRenderer.load();
+
+        // this.paletteRenderer = new Renderer({
+        //     displayDevice: this.paletteDisplayDevice,
+        //     width: PPU.NAME_TABLE_WIDTH * 8,
+        //     height: PPU.NAME_TABLE_HEIGHT * 8,
+        //     focus: false
+        // });
+        // this.paletteRenderer.load();
 
         this.mainRenderer.setFocus();
         
-        this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, [128]);
+        // this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, [128]);
     },
 
-    loadTiles: function() {
-        var i = 0,  
-            index = 0,
-            tileIndex = -1,
+    loadTile: function(tileIndex) {
+        var index = 0,
             val = 0,
-            bit = 0,
-            valBits = '';
+            valBits = '',
+            i = 0,
+            startingIndex = PPU.PATTERN_TABLES_START + tileIndex * 16,
+            firstSetEndingIndex = startingIndex + 8,
+            endingIndex = startingIndex + 16,
+            dataChanged = false,
+            horizontalData = [],
+            verticalData = [],
+            verticalDataSet = [];
 
-        // First and second pattern table tiles.
-        for (i = PPU.PATTERN_TABLES_START; i < 0x2000; i++) {
-            if (i % 16 == 0) {
-                tileIndex++;
-                this.tiles[tileIndex] = new Array(64);
-            }
+        if (this.tiles[tileIndex]) {
             
-            // Show value in binary format with all eight bits.
-            val = this.vram.readFrom(i);        
-            valBits = val.toString(2);
-            valBits = '00000000'.substr(valBits.length) + valBits;
+        } else {
+            this.tiles[tileIndex] = {
+                originalData: [],    
+                data: new Array(64),
+                horizontalData: [],
+                verticalData: []
+            };
+        } 
 
-            for (j = 0; j < valBits.length; j++) {
-                bit = parseInt(valBits[j]);
-                index = j + (i % 8) * 8;
+        // Check first set data to see if data has changed.
+        for (i = startingIndex; i < endingIndex; i++) {
+            val = this.vram.readFrom(i);
 
-                if (this.tiles[tileIndex][index]) {
-                    if (this.tiles[tileIndex][index] == 0) {
-                        if (bit == 1) {
-                            bit = 2;
-                        }
-                    } else if (this.tiles[tileIndex][index] == 1) {
-                        if (bit == 1) {
-                            bit = 3;
-                        } else {
-                            bit = 1;
-                        }
-                    }
-                } 
-
-                this.tiles[tileIndex][index] = bit;
+            if (_.isUndefined(this.tiles[tileIndex].originalData[index]) || val != this.tiles[tileIndex].originalData[index]) {
+                dataChanged = true;
+                break;
             }
+
+            index++;
         }
 
-        // this.renderTiles();
+        // Update tile data if data has changed.
+        if (dataChanged) {
+            // Reset all data.
+            this.tiles[tileIndex].originalData.length = 0;
+            this.tiles[tileIndex].data  = new Array(64);
+            this.tiles[tileIndex].horizontalData.length = 0;
+            this.tiles[tileIndex].verticalData.length = 0;
+            
+            for (i = startingIndex; i < endingIndex; i++) {
+                // Show value in binary format with all eight bits.
+                val = this.vram.readFrom(i);        
+                valBits = val.toString(2);
+                valBits = '00000000'.substr(valBits.length) + valBits;
+                horizontalData.length = 0;
+                verticalData.length = 0;
+                
+                this.tiles[tileIndex].originalData.push(val);
+
+                for (j = 0; j < valBits.length; j++) {
+                    bit = parseInt(valBits[j]);
+                    index = j + (i % 8) * 8;
+
+                    if (!_.isUndefined(this.tiles[tileIndex].data[index])) {
+                        if (this.tiles[tileIndex].data[index] == 0) {
+                            if (bit == 1) {
+                                bit = 2;
+                            }
+                        } else if (this.tiles[tileIndex].data[index] == 1) {
+                            if (bit == 1) {
+                                bit = 3;
+                            } else {
+                                bit = 1;
+                            }
+                        }
+
+                        this.tiles[tileIndex].horizontalData.unshift(bit);
+                        verticalData.push(bit);
+                    } 
+
+                    this.tiles[tileIndex].data[index] = bit;  
+                }
+
+                if (verticalData.length) {
+                    verticalDataSet.unshift(verticalData);
+                }
+            }
+
+            this.tiles[tileIndex].verticalData = _.flatten(verticalDataSet);
+        }
+    },
+
+    loadTiles: function(start, length) {
+        var i = 0;
+
+        for (i = start; i < start + length; i++) {
+            this.loadTile(i);
+        }
     },
 
     reset: function() {
@@ -140,11 +210,14 @@ var PPU = Class({
         this.tileIndex = 0;
         this.tiles.length = 0;
         this.mainRenderer.reset();
-        this.tilesRenderer.reset();
-        this.nameTableRenderer.reset();
+        // this.tilesRenderer.reset();
+        // this.nameTableRenderer.reset();
+        // this.paletteRenderer.reset();
         this.vram.reset();
         this.sram.reset();
         this.spriteOverflow = false;
+        this.vblank = false;
+        this.sramWritten = false;
 
         _.each(this.oam, function(oam, index, list) {
             list[index] = 0xFF;
@@ -160,34 +233,44 @@ var PPU = Class({
         var i = 0,
             ppuRegister = 0;
 
-        if (this.scanline == -1) {
-            ppuRegister = this.mobo.cpu.readFromRAM(CPU.PPU_STATUS_REGISTER);
-
-            if (ppuRegister >> 7 == 1) {    // Clear PPU status register bit 7 to indicate v-blank has started (http://wiki.nesdev.com/w/index.php/PPU_registers#PPUMASK).
-                this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, ppuRegister - 128);
-            }
-
+        if (this.scanline == -1) {               
             this.mainRenderer.removeAllObjects();
+            // this.tilesRenderer.removeAllObjects();
+            // this.paletteRenderer.removeAllObjects();
         } else {
+            this.setSprite0Hit(); 
+
             // Render every 8th scanline.
-            if (this.scanline > 0 && this.scanline % 8 == 0 && this.scanline <= 240) {    
-                this.renderScanline();
+            if (this.scanline > 0 && this.scanline % 8 == 0 && this.scanline <= 240) {                    
+                this.renderScanline();             
             }
 
             if (this.scanline == 240) {
-                this.renderSprites();
-            }
+                this.renderSprites();           
 
-            if (this.scanline == 241) {
-                ppuRegister = this.mobo.cpu.readFromRAM(CPU.PPU_STATUS_REGISTER);
-
-                if (ppuRegister >> 7 != 1) {    // Set PPU status register bit 7 to indicate v-blank has started (http://wiki.nesdev.com/w/index.php/PPU_registers#PPUMASK).
-                    this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, ppuRegister + 128);
-                }
+                // Debug graphics.
+                // this.renderPalette();
+                // this.renderTiles();
             }
             
+            if (this.scanline >= 241 && this.scanline <= 260) {
+                if (this.vblank == false) {    
+                    ppuRegister = this.mobo.cpu.readFromRAM(PPU.PPU_STATUS_REGISTER);
+                    this.mobo.cpu.triggerInterrupt(CPU.NMI_INTERRUPT);
+                    this.vblank = true;
+
+                    if (ppuRegister >> 7 != 1) {    // Set PPU status register bit 7 to indicate v-blank has started (http://wiki.nesdev.com/w/index.php/PPU_registers#PPUMASK).
+                        this.mobo.cpu.writeToRAM(PPU.PPU_STATUS_REGISTER, [ppuRegister + 128]);
+                    }
+                }
+            }
+
+            if (this.scanline >= 244 && this.scanline <= 260) {
+                this.loadTiles(this.scanline % 244 * 32, 32); 
+            }
+
             // Rendered a full frame. Start a new one.
-            if (this.scanline >= 262) {
+            if (this.scanline >= 261) {           
                 this.nextFrame();
                 return;
             }
@@ -197,33 +280,55 @@ var PPU = Class({
     },  
 
     /*
-        Next frame when all pixels are rendered.
+        Next frame when everything is rendered.
     */
     nextFrame: function() {
+        var ppuRegister = this.mobo.cpu.readFromRAM(CPU.PPU_STATUS_REGISTER);
+
         this.cycles = 0;
-        this.scanline = -1;
         this.tileIndex = 0;
-        this.mobo.cpu.triggerInterrupt(CPU.NMI_INTERRUPT);
+        this.scanline = -1;
+        this.vblank = false;
+        this.spriteOverflow = false;
+
+        // Clear PPU status register bit 7 to indicate v-blank has ended (http://wiki.nesdev.com/w/index.php/PPU_registers#PPUMASK).
+        if (ppuRegister >> 7 == 1) {    
+            this.mobo.cpu.writeToRAM(CPU.PPU_STATUS_REGISTER, [ppuRegister - 128]);
+        }
+
+        // Clear hit flag.
+        if (ppuRegister >> 6 & 1 == 1) {
+            this.mobo.cpu.writeToRAM(PPU.PPU_STATUS_REGISTER, [ppuRegister - 64]);
+        }
+
+        // Clear sprite overflow flag.
+        if (ppuRegister >> 5 & 1 == 1) {
+            this.mobo.cpu.writeToRAM(PPU.PPU_STATUS_REGISTER, [ppuRegister - 32]);
+        }
     },
 
     /*
         Render scanline. To keep it simple and faster, each scanline renders 32 tiles horizontally instead of rendering one pixel across the screen.
     */  
-    renderScanline: function() {
+    renderScanline: function() {  
         var i = 0,
-            background = this.getNameTableData(this.getNameTableIndex()),
-            attributes = this.getAttributeTableData(this.getPatternTableIndex());
-
-        for (i = 0; i < background.length; i++) {
-            tile = _.toArray($.extend(true, {},  this.getTile(background[i])));
-
+            patternTableIndex = this.getBackgroundPatternTableIndex(),
+            nameTableIndex = this.getNameTableIndex(),
+            background = this.getNameTableData(nameTableIndex),
+            attributes = this.getAttributeTableData(nameTableIndex),
+            toAdd = false,
+            attributeByte = 0;
+            
+        for (i = 0; i < background.length; i++) {  
+            toAdd = false; 
+            tile = this.getTile(patternTableIndex, background[i]).slice(); 
+            attributeByte = attributes[Math.floor(i / 4)];          // Each attribute byte covers 4 tiles.
+              
             _.each(tile, function(pixel, index, list) {
-                var rgb = [],
-                    paletteColors = [],
-                    attributeByte = attributes[Math.floor(index / 4)],
+                var paletteColors = [],
                     tileNum = 0,
-                    matrixScanline = (this.scanline / 8 - 1) % 4,   // Scan line in 4x4 color matrix from attribute table.
-                    twoBits = 0;    // Upper two color bits.
+                    matrixScanline = (this.scanline / 8 - 1) % 4,   // Scanline in 4x4 color matrix from attribute table.
+                    twoBits = 0;                                    // Upper two color bits.
 
                 // Read color info from attribute table per byte (http://tuxnes.sourceforge.net/nestech100.txt).
                 // Starting tile number every 8th scanline.
@@ -243,6 +348,8 @@ var PPU = Class({
                     case 3:
                         tileNum = 10
                     break;
+
+                    default:
                 };
 
                 // Tile number in the scanline across the screen (rotates every 4 tiles).
@@ -262,6 +369,7 @@ var PPU = Class({
                     default:
                 }
 
+                // Attribute byte bits for tiles.
                 switch (tileNum) {
                     case 0:
                     case 1:
@@ -294,19 +402,42 @@ var PPU = Class({
                     default:
                 };
 
-                paletteColors = this.getImageColors(twoBits);
-
                 if (pixel != 0) {
-                    rgb = paletteColors[pixel - 1].split(' ');
-                    list[index] = rgb[0] << 16 | rgb[1] << 8 | rgb[2];      // Pixel color in RGB color code.
+                    paletteColors = this.getImageColors(twoBits);
+                    list[index] = paletteColors[pixel];      // Pixel color in RGB color code.
+
+                    if (list[index]) {
+                        toAdd = true;
+                    }
                 }
             }.bind(this));
+             
+            // Only render non-black tiles.
+            if (toAdd) {
+                this.mainRenderer.addSprite(tile, i * 8, this.scanline - 8);
+            }
 
-            this.mainRenderer.addSprite(tile, i * 8, this.scanline - 8);
             this.cycles += 64;
         }
 
         this.tileIndex += 32;
+    },
+
+    setSprite0Hit: function() {
+        var i = 0,
+            ppuRegister = this.mobo.cpu.readFromRAM(PPU.PPU_STATUS_REGISTER);
+
+        if (this.sramWritten == false || ppuRegister >> 6 & 1 == 1) {
+            return;
+        }
+
+        // Find next sprite in view to set sprite zero hit flag.
+        for (i = 0; i < 0x100; i+=4) {
+            if (this.sram.readFrom(i) == this.scanline) {
+                this.mobo.cpu.writeToRAM(PPU.PPU_STATUS_REGISTER, [ppuRegister + 64]);
+                break;
+            }
+        }
     },
 
     /*
@@ -314,46 +445,55 @@ var PPU = Class({
     */
     renderSprites: function() {
         var i = 0,
-            cursor = 0,
             sramAddress = 0x00,
-            tile = '',
+            tile = [],
             x = 0,
             y = 0,
-            paletteColors = [];
+            paletteColors = [],
+            attributes = null,
+            toAdd = false,
+            patternTableIndex = 0,
+            flipHorizontally = false,
+            flipVertically = false,
+            behindBackground = false,
+            ppuRegister = 0;
 
         do {
+            y = this.sram.readFrom(sramAddress);    // Y position.
+
             // Only add sprite if it is in view.
-            if (this.sram.readFrom(sramAddress) <= this.scanline) {
-                y = this.sram.readFrom(sramAddress);                                                        // Y position.
-                tile = _.toArray($.extend(true, {},  this.tiles[this.sram.readFrom(sramAddress + 1)]));     // Tile index number.
-                paletteColors = this.getPaletteColors(this.sram.readFrom(sramAddress + 2) & 3);             // Sprite attributes. First two btis is palette index.
+            if (y <= this.scanline) {
+                toAdd = false;   
+                tileIndex = this.sram.readFrom(sramAddress + 1);
+                patternTableIndex = this.getSpritePatternTableIndex(tileIndex);
+                attributes = this.sram.readFrom(sramAddress + 2); 
+                flipHorizontally = (attributes >> 6 & 1 == 1);
+                flipVertically = (attributes >> 7 & 1 == 1);
+                behindBackground = (attributes >> 5 & 1 == 1);                                                
+                tile = this.getTile(patternTableIndex, tileIndex, flipHorizontally, flipVertically).slice();        // Tile index number.
+                paletteColors = this.getSpriteColors(attributes & 3);              // Sprite attributes. First two bits is palette index.
                 x = this.sram.readFrom(sramAddress + 3);                                                    // X position.
 
-                _.each(tile, function(pixel, index, list) {
-                    var rgb = [];
+                if (behindBackground == false) {
+                    _.each(tile, function(pixel, index, list) {
+                        if (pixel != 0) {
+                            list[index] = paletteColors[pixel];      // Pixel color in RGB color code.
+                        }
 
-                    if (pixel != 0) {
-                        rgb = paletteColors[pixel - 1].split(' ');
-                        list[index] = rgb[0] << 16 | rgb[1] << 8 | rgb[2];      // Pixel color in RGB color code.
+                        if (list[index]) {
+                            toAdd = true;
+                        }
+                    }.bind(this));
+
+                    // Only render non-black tiles.
+                    if (toAdd) {
+                        this.mainRenderer.addSprite(tile, x, y);
                     }
-                }.bind(this));
-
-                this.mainRenderer.addSprite(tile, x, y);
-                cursor += 4;
+                }
             }
 
             sramAddress += 4;
-        } while(cursor <= 252);
-
-        this.spriteOverflow = false;
-
-        // Find next sprite in view to set sprite overflow flag.
-        for (i = sramAddress; i < 0x100; i+=4) {
-            if (this.sram.readFrom(i) <= this.scanline) {
-                this.spriteOverflow = true;
-                break;
-            }
-        }
+        } while(sramAddress <= 252);
     },
 
     getImageColors: function(index) {
@@ -380,6 +520,7 @@ var PPU = Class({
             default:
         }
 
+        colors.push(this.palette[this.vram.readFrom(address)]);
         colors.push(this.palette[this.vram.readFrom(address + 1)]);
         colors.push(this.palette[this.vram.readFrom(address + 2)]);
         colors.push(this.palette[this.vram.readFrom(address + 3)]);
@@ -387,7 +528,7 @@ var PPU = Class({
         return colors;
     },
 
-    getPaletteColors: function(index) {
+    getSpriteColors: function(index) {
         var address = 0x00,
             colors = [];
 
@@ -411,6 +552,7 @@ var PPU = Class({
             default:
         }
 
+        colors.push(this.palette[this.vram.readFrom(address)]);
         colors.push(this.palette[this.vram.readFrom(address + 1)]);
         colors.push(this.palette[this.vram.readFrom(address + 2)]);
         colors.push(this.palette[this.vram.readFrom(address + 3)]);
@@ -422,51 +564,91 @@ var PPU = Class({
         Get current name table index from PPU control regier 1 (0x2000).
     */
     getNameTableIndex: function() {
-        var reg = this.mobo.cpu.readFromRAM(CPU.PPU_CONTROL_REGISTER_1),
+        var reg = this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1),
             index = reg & 3;    // First 2 bits is index.
 
         return index;
     },
 
     /*
-        Get current pattern table index from PPU control register 1 (0x2000).
+        Get current sprite pattern table index from PPU control register 1 (0x2000).
     */
-    getPatternTableIndex: function() {
-        var reg = this.mobo.cpu.readFromRAM(CPU.PPU_CONTROL_REGISTER_1),
+    getSpritePatternTableIndex: function(tileIndex) {
+        var reg = this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1),
+            spriteSize = reg >> 5 & 1,
             index = reg >> 3 & 1;    // Bit 3 is index.
+
+        if (spriteSize == 1) {
+            if (tileIndex % 2 == 0) {
+                index = 0;
+            } else {
+                index = 1;
+            }  
+        }
 
         return index;
     },
 
-    getTile: function(index) {
+    /*
+        Get current background pattern table index from PPU control register 1 (0x2000).
+    */
+    getBackgroundPatternTableIndex: function() {
+        var reg = this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1),
+            index = reg >> 4 & 1;    // Bit 4 is index.
+
+        return index;
+    },
+
+    getTile: function(patternTableIndex, index, flipHorizontally, flipVertically) {
         var tile = [],
-            patternTablePosition = (this.patternTableIndex == 0 ? 0 : 256),
-            index = index + patternTablePosition;
+            index = patternTableIndex * 256 + index;
 
         if (index > this.tiles.length - 1) {
             throw new Error ('Tile ' + index + ' not found.');
         } 
-            
-        tile = this.tiles[index];
+
+        // this.loadTile(index);
+        
+        if (this.tiles[index]) {
+            tile = this.tiles[index].data;
+
+            if (flipHorizontally) {
+                tile = this.tiles[index].horizontalData;
+            }
+
+            if (flipVertically) {
+                tile = this.tiles[index].verticalData;
+            }
+        }
 
         return tile;
     },
 
     renderTiles: function() {
         var x = 0,
-            y = -1;
+            y = -8,
+            paletteColors = ['0', '16777215', '8325888', '1785695'],
+            tile = [];
 
         _.each(this.tiles, function(tile, index) {
-            x = index % 8 * 8;
+            if (tile) {
+                tile = tile.data.slice();
+                
+                _.each(tile, function(pixel, index, list) {
+                    if (pixel != 0) {
+                        list[index] = paletteColors[pixel];      // Pixel color in RGB color code.
+                    }
+                }.bind(this));
 
-            if (x == 0) {
-                y += 8;
+                x = index % 16 * 8;
+
+                if (x == 0) {
+                    y += 8;
+                }
+
+                this.tilesRenderer.addSprite(tile, x, y);
             }
-
-            this.tilesRenderer.addObject(tile, x, y);
         }.bind(this));
-
-        this.tilesRenderer.render();
     },
 
     getPatternTable: function(index) {
@@ -531,7 +713,7 @@ var PPU = Class({
     */
     getAttributeTableData: function(index) {
         var address = 0x00,
-            length = 32 / 4,    // One byte is 4x4 tiles.
+            length = 8,             // One byte is 4x4 tiles.
             data = [];
 
         if (index > 3 || index < 0) {
@@ -558,7 +740,7 @@ var PPU = Class({
             default:
         }
 
-        address = address + this.scanline / 32 * length
+        address = address + (Math.ceil(this.scanline / 32) - 1) * length
 
         for (i = address; i < address + length; i++) {
             data.push(this.vram.readFrom(i));
@@ -590,30 +772,128 @@ var PPU = Class({
         this.scanline = oldScanline;
     },
 
+    renderPalette: function() {
+        var i = 0,
+            j = 0,
+            square = [],
+            colors = [],
+            x = 0,
+            y = 0,
+            toAdd = false;
+
+        for (i = 0; i < 4; i++) {
+            colors = this.getImageColors(i);
+
+            _.each(colors, function(color) {
+                toAdd = false;
+                square.length = 0;
+
+                if (color) {
+                    toAdd = true;
+
+                    for (j = 0; j < 64; j++) {
+                        square.push(color);
+                    }
+                }
+
+                if (toAdd) {
+                    this.paletteRenderer.addSprite(square, x, y); 
+                }
+
+                x += 8;
+
+                if (x >= 32) {
+                    y += 8;
+                    x = 0;
+                }   
+            }.bind(this));
+        }
+
+        for (i = 0; i < 4; i++) {
+            colors = this.getSpriteColors(i);
+
+            _.each(colors, function(color) {
+                toAdd = false;
+                square.length = 0;
+
+                if (color) {
+                    toAdd = true;
+
+                    for (j = 0; j < 64; j++) {
+                        square.push(color);
+                    }
+                }
+
+                if (toAdd) {
+                    this.paletteRenderer.addSprite(square, x, y); 
+                }
+
+                x += 8;
+
+                if (x >= 32) {
+                    y += 8;
+                    x = 0;
+                }   
+            }.bind(this));
+        }
+    },
+
     setSRAMaddress: function(data) {
         this.sramAddress = data;
     },
 
     writeToSRAM: function(data) {
+        this.sramWritten = true;
         this.sram.writeTo(this.sramAddress, data);
     },
 
     setVRAMaddress: function(data) {
-        if (this.vramIOAddressHighBits == 0x00) {
+        if (this.vramIOAddressHighBits == -1) {
             this.vramIOAddressHighBits = data;
         } else {
             this.vramIOAddressLowBits = data;
             this.vramIOaddress = this.vramIOAddressLowBits | this.vramIOAddressHighBits << 8;
-            this.vramIOAddressHighBits = 0x00;
-            this.vramIOAddressLowBits = 0x00;
+            this.vramIOAddressHighBits = -1;
+            this.vramIOAddressLowBits = -1;
         }  
     },
 
-    writeIOToVRAM: function(data) {
-        this.vram.writeTo(this.vramIOaddress, data);
+    /*
+        Write data to VRAM.
+    */  
+    writeIOToVRAM: function(data) {            
+        var regVal = this.mobo.cpu.readFromRAM(PPU.PPU_MASK_REGISTER),
+            vblank = this.isVBlank();
 
-        // Read PPU controler register #1 (0x2000) bit 2 to increase VRAM address by 1 or 32.
-        this.vramIOaddress += ((this.mobo.cpu.readFromRAM(CPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
+        // if (this.vramIOaddress >= PPU.PATTERN_TABLE_0_START && this.vramIOaddress < PPU.NAME_TABLE_0_START) {
+        //     if (vblank) { // || (regVal >> 3 & 1) == 0 && (regVal >> 4 & 1) == 0) {
+        //         this.vram.writeTo(this.vramIOaddress, data);
+        //         this.vramIOaddress += ((this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
+        //     }
+        // } else {
+            this.vram.writeTo(this.vramIOaddress, data);
+            this.vramIOaddress += ((this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
+        // }
+
+        // Mirrors.
+        // if (this.mobo.rom.verticalMirroring) {
+        //     this.vram.writeTo(this.vramIOaddress + 0x800, data);
+        // } else if (this.mobo.rom.horizontalMirroring) {
+        //     this.vram.writeTo(this.vramIOaddress + 0x400, data);
+        // } else if (this.mobo.rom.fourScreenVRAM) {
+        //     this.vram.writeTo(this.vramIOaddress + 0x400, data);
+        //     this.vram.writeTo(this.vramIOaddress + 0x800, data);
+        //     this.vram.writeTo(this.vramIOaddress + 0xc00, data);
+        // }
+    },
+
+    /*
+        Return if it is in v-blank period.
+    */
+    isVBlank: function() {
+        var regVal = this.mobo.cpu.readFromRAM(PPU.PPU_STATUS_REGISTER);
+
+        return (regVal >> 7 == 1);
     },
 
     dump: function() {
@@ -733,7 +1013,7 @@ var Renderer = Class({
         this.stage = null;
         this.textures = [];
         this.objects = [];
-        // this.meter = new FPSMeter();
+        this.fpsMeter = new FPSMeter();
     },
 
     load: function() {
@@ -762,7 +1042,8 @@ var Renderer = Class({
 
         // Create a container object called the `stage`.
         this.stage = new PIXI.Container();
-
+        // this.stage.scale.x += 0.5;
+        // this.stage.scale.y += 0.5;
         requestAnimationFrame(this.render.bind(this));
     },
 
@@ -791,8 +1072,9 @@ var Renderer = Class({
             context = null,
             imageData = null,
             texture = null,
+            graphDataToString = graphData.toString(),
             found = _.find(this.textures, function(obj) {
-                        return obj.graphData.toString() == graphData.toString();
+                        return obj.graphData == graphDataToString;
                     });
 
         if (found) {
@@ -809,7 +1091,8 @@ var Renderer = Class({
                 var red = 0,
                     green = 0,
                     blue = 0,
-                    alpha = 0;
+                    alpha = 0,
+                    index = index * 4;
 
                 if (pixel != 0) {
                     red = pixel >> 16;
@@ -818,19 +1101,17 @@ var Renderer = Class({
                     alpha = 255;
                 }
 
-                index *= 4;
-
-                imageData.data[index++] = red;
-                imageData.data[index++] = green;
-                imageData.data[index++] = blue;
-                imageData.data[index] = alpha;
-            }.bind(this));
+                imageData.data[index] = red;
+                imageData.data[index + 1] = green;
+                imageData.data[index + 2] = blue;
+                imageData.data[index + 3] = alpha;
+            }.bind(this));1
 
             context.putImageData(imageData, 0, 0);
             texture = PIXI.Texture.fromCanvas(canvas);
             
             this.textures.push({
-                graphData: graphData,
+                graphData: graphDataToString,
                 texture: texture
             });
 
@@ -842,6 +1123,7 @@ var Renderer = Class({
         sprite = new PIXI.Sprite(texture);
         sprite.x = x;
         sprite.y = y;
+
         this.stage.addChild(sprite);
     },
 
@@ -875,9 +1157,9 @@ var Renderer = Class({
     },
 
     render: function() {
-        // this.meter.tickStart();
+        this.fpsMeter.tickStart();
         this.renderer.render(this.stage);
+        this.fpsMeter.tick();
         requestAnimationFrame(this.render.bind(this));
-        // this.meter.tick();
     }
 });

@@ -60,6 +60,7 @@ var CPU = Class({
         this.poweredUp = false;
         this.instructions = 0;
         this.isNewFrame = false;
+        this.nmiCycles = 0;
     },
 
     load: function() {
@@ -422,7 +423,7 @@ var CPU = Class({
     },
 
     /*
-        Write data to cpu memory and IOs.
+        Write data to CPU memory, registers and IOs.
     */
     writeToRAM: function(address, data) {
         var i = 0,
@@ -432,13 +433,17 @@ var CPU = Class({
 
         // Ignore write to the following register if earlier than ~29658 CPU cycles after reset (https://wiki.nesdev.com/w/index.php/PPU_power_up_state).
         if (!this.poweredUp) {  
-            if (address == CPU.PPU_CONTROL_REGISTER_1 || address == CPU.PPU_MASK_REGISTER || address == CPU.PPU_SCROLL_REGISTER || address == CPU.PPU_ADDR_REGISTER) {
+            if (address == CPU.PPU_CONTROL_REGISTER_1 || address == CPU.PPU_MASK_REGISTER || address == CPU.PPU_SCROLL_REGISTER || address == CPU.PPU_ADDR_REGISTER || address == CPU.PPU_DATA_REGISTER) {
                 return;
             }
         }
 
         oldValue = this.mobo.ram.readFrom(address);
         this.mobo.ram.writeTo(address, data);
+
+        if (this.mobo.rom.mmc) {
+            this.mobo.rom.mmc.cpuRegWrite(address, data);
+        }
 
         // Mirror three times if it is zero page (from 0x0000 to 0x0100);
         if (address >= 0x0000 && address < 0x0100) {
@@ -467,8 +472,12 @@ var CPU = Class({
                 this.mobo.ppu.setVRAMaddress(data[0]);
             break;
 
-            case CPU.PPU_DATA_REGISTER:    
+            case CPU.PPU_DATA_REGISTER: 
                 this.mobo.ppu.writeIOToVRAM(data);
+            break;
+
+            case CPU.PPU_SCROLL_REGISTER:
+
             break;
 
             case CPU.PPU_OAM_DMA_REGISTER:    // DMA copy (w).
@@ -477,9 +486,10 @@ var CPU = Class({
                 for (i = 0; i < 256; i++) {
                     dmaData.push(this.readFromRAM(i + dmaAddress));
                 }
-
+                
                 this.mobo.ppu.writeToSRAM(dmaData);
-                this.cycles += 512;
+
+                // this.cycles += 512;
             break;
 
             case CPU.CONTROLLER_1_REGISTER:     // Controller 1 register. A 1/0 write sequence (https://wiki.nesdev.com/w/index.php/Standard_controller).
@@ -493,7 +503,7 @@ var CPU = Class({
     },
 
     /*
-        Allow cpu memory access from ppu.
+        Allow CPU memory/register access from other devices.
     */
     readFromRAM: function(address) {
         switch (address) {
@@ -501,9 +511,13 @@ var CPU = Class({
                 return this.mobo.controller1.getNextInput();
             break;
 
+            case CPU.PPU_STATUS_REGISTER:
+
+            break;
+
             default:
         }
-        
+
         return this.mobo.ram.readFrom(address);
     },
 
@@ -531,9 +545,8 @@ var CPU = Class({
                 opInstance = this.opInstances[op.instruction];
                 opInstance.setOp(op);
                 opInstance.execute();
-                // this.instructions++;
+                this.instructions++;
                 // opInstance.dump();
-
             } else {
                 throw new Error('Op code ' + opCode + ' not implemented.');
             }
@@ -558,30 +571,19 @@ var CPU = Class({
 
         for (;;) {
             if (this.isNewFrame) {
+                this.instructions = 0;
                 this.isNewFrame = false;
-                setTimeout(this.run.bind(this), 16.66);
+                setTimeout(this.run.bind(this), 1);
                 break;
             }
 
             this.checkInterrupt();
             this.emulate();
 
-            // this.writeToRAM(CPU.CONTROLLER_1_REGISTER, [this.mobo.controller1.getNextInput()]);
-
-            if (this.interruptType) {
-                // if (this.instructions > 10000) {this.writeToRAM(CPU.CONTROLLER_1_REGISTER, [this.mobo.controller1.getNextInput()]);484
-                //     this.instructions = 0;
-                //     setTimeout(this.run.bind(this), 16.66);
-                //     break;
-                // }
-            } else {
-                // this.instructions = 0;
-                // Render one scanline and reset CPU cycles if it is more than one PPU scanline cycles.
-                if (this.cycles >= PPU.CPU_CYCLES_PER_SCANLINE) {
-                    this.mobo.ppu.render();
-                    this.cycles = 0                
-                } 
-            }
+            if (this.cycles >= PPU.CPU_CYCLES_PER_SCANLINE) {
+                this.mobo.ppu.render();
+                this.cycles = 0;             
+            } 
         }
     },
 
@@ -609,7 +611,7 @@ var CPU = Class({
     },
 
     /*
-        Check to see if a interrupted has triggered and jump to interrupt vector address.
+        Check to see if an interrupted has triggered and jump to interrupt vector address.
     */
     checkInterrupt: function() {
         var lowBitsAddress = 0x00,
@@ -669,7 +671,6 @@ var Op = Class({
         this.getOperand();
         this.cpu.cycles += this.op.cycles;
         this.cpu.pc_reg += this.op.bytes;    // Default to increase program counter register by the size of instruction.
-            
     },
 
     setOp: function(op) {
@@ -1530,6 +1531,7 @@ var RTIop = Class(Op, {
         this.cpu.pc_reg += this.cpu.popStack() << 8;    
         this.cpu.interruptType = null;
         this.cpu.interruptedAddress = 0x00;
+        this.cpu.nmiCycles = 0;
         this.cpu.cycles = 0;
     }
 });
