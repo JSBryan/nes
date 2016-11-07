@@ -1,7 +1,7 @@
 var ROM = Class({
     $const: {
         PRG_BANK_SIZE: 16384,    // 16KB per RPG bank.
-        CHR_BANK_SIZE: 4092,     // 4KB per CHR bank.
+        CHR_BANK_SIZE: 4096,     // 4KB per CHR bank.
         TRAINER_SIZE: 512        // Trainer size if any.
     },
 
@@ -84,15 +84,14 @@ var ROM = Class({
             startingByte += ROM.TRAINER_SIZE;
         }
 
-        for (i = 0; i < this.numOfCHR * 2; i++) {   // 4KB per bank but number of CHAR bank stores in ROM is per 8KB. So times 2.
-            this.chrBanks.push(i);
+        this.chrBanks = new Array(this.numOfCHR * 2);
+
+        for (i = 0; i < this.chrBanks.length; i++) {
             this.chrBanks[i] = [];
 
             for (j = 0; j < ROM.CHR_BANK_SIZE; j++) {
-                this.chrBanks[i].push(this.rom[startingByte + j]);
+                this.chrBanks[i].push(this.rom[startingByte++]);
             }
-
-            startingByte += ROM.CHR_BANK_SIZE;
         }
     },
 

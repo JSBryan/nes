@@ -1,8 +1,8 @@
 var Controller = Class({
     $const: {
         CONTROLLER_1_PORT: 0x4016,
-        CONTROLLER_1_BUTTON_A: 'a',
-        CONTROLLER_1_BUTTON_B: 's',
+        CONTROLLER_1_BUTTON_A: 's',
+        CONTROLLER_1_BUTTON_B: 'a',
         CONTROLLER_1_BUTTON_SELECT: 'shift',
         CONTROLLER_1_BUTTON_START: 'enter',
         CONTROLLER_1_BUTTON_UP: 'up',

@@ -477,7 +477,7 @@ var CPU = Class({
             break;
 
             case CPU.PPU_SCROLL_REGISTER:
-
+                this.mobo.ppu.setScrollRegister(data[0]);
             break;
 
             case CPU.PPU_OAM_DMA_REGISTER:    // DMA copy (w).
