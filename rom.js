@@ -114,19 +114,18 @@ var ROM = Class({
 
         try {
             this.mmc = eval('new MMC' + this.nibbleMapper + '(options)');
+            this.mmc.load();
         } catch(e) {
             console.log ('Mapper not implemented.', this.nibbleMapper);
             throw e;
         }
-
-        this.mmc.load();
     },
 
     readPRG: function(bank) {
         if (bank < this.prgBanks.length) {
             return this.prgBanks[bank];
         } else {
-            throw new Error ('Invalid RPG bank.');
+            throw new Error ('Invalid RPG bank at ' + bank);
         }
     },
 
@@ -138,7 +137,7 @@ var ROM = Class({
         if (bank < this.chrBanks.length) {
             return this.chrBanks[bank];
         } else {
-            throw new Error ('Invalid CHR bank.');
+            throw new Error ('Invalid CHR bank at ' + bank);
         }
     },
 

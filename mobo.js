@@ -7,6 +7,7 @@ var Mobo = Class({
     ram: null,
     rom: null,
     ppu: null,
+    mmc: null,
 
     constructor: function() {
 

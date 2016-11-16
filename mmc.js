@@ -11,7 +11,7 @@ var MMC = Class({
     },
 
     load: function() {
-
+        this.mobo.mmc = this;       // Let other components access ROM infomation.
     },
 
     cpuRegWrite: function(address, value) {
@@ -42,13 +42,17 @@ var MMC0 = Class(MMC, {
     },
 
     load: function() {
+        MMC0.$superp.load.call(this);
+
         // Read PRG data.
         this.mobo.ram.writeTo(0x8000, this.mobo.rom.readPRG(0));
         this.mobo.ram.writeTo(0xC000, this.mobo.rom.readPRGLastBank());
 
-        // // Read CHR data.
-        this.mobo.ppu.vram.writeTo(0x0000, this.mobo.rom.readCHR(0));
-        this.mobo.ppu.vram.writeTo(0x1000, this.mobo.rom.readCHR(1));
+        // Read CHR data.
+        if (this.rom.numOfCHR > 0) {
+            this.mobo.ppu.vram.writeTo(0x0000, this.mobo.rom.readCHR(0));
+            this.mobo.ppu.vram.writeTo(0x1000, this.mobo.rom.readCHR(1));
+        }        
     },
 
     dump: function() {
@@ -68,6 +72,8 @@ var MMC2 = Class(MMC, {
     },
 
     load: function() {
+        MMC2.$superp.load.call(this);
+
         // Read PRG data.
         if (this.rom.numOfPRG > 1) {
             this.mobo.ram.writeTo(0x8000, this.mobo.rom.readPRG(0));
@@ -95,6 +101,8 @@ var MMC3 = Class(MMC, {
     },
 
     load: function() {
+        MMC3.$superp.load.call(this);
+
         // Read PRG data.
         if (this.rom.numOfPRG > 1) {
             this.mobo.ram.writeTo(0x8000, this.mobo.rom.readPRG(0));

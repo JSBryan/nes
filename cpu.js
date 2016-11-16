@@ -28,7 +28,8 @@ var CPU = Class({
         PPU_OAM_DMA_REGISTER: 0x4014,
         CONTROLLER_1_REGISTER: 0x4016,
         CONTROLLER_2_REGISTER: 0x4017,
-        NMI_INTERRUPT: 'NMI interrupt'                  // NMI interrupt, occurs at start of v-blank by PPU.
+        NMI_INTERRUPT: 'NMI interrupt',                  // NMI interrupt, occurs at start of v-blank by PPU.
+        CPU_CYCLES_PER_SCANLINE: 113.667                 // Number of CPU cycles per NES scanline.
     },
 
     ops: _.range(255),
@@ -388,11 +389,11 @@ var CPU = Class({
     },
 
     pushStack: function(data) {
-        this.writeToRAM(this.sp_reg, [data]);
+        this.mobo.ram.writeTo(this.sp_reg, [data]);
         this.sp_reg--;
 
         if (this.sp_reg < CPU.STACK_POINTER_END) {
-            this.sp_reg = CPU.STACK_POINTER_START - (CPU.STACK_POINTER_END - this.sp_reg) ;
+            this.sp_reg = CPU.STACK_POINTER_START - (CPU.STACK_POINTER_END - this.sp_reg);
         }
     },
 
@@ -416,7 +417,7 @@ var CPU = Class({
             data = [];
 
         for (i = CPU.STACK_POINTER_START; i > CPU.STACK_POINTER_END; i--) {
-            data.push(this.readFromRAM(i));
+            data.push(this.mobo.ram.readFrom(i));
         }
 
         return data;
@@ -441,8 +442,8 @@ var CPU = Class({
         oldValue = this.mobo.ram.readFrom(address);
         this.mobo.ram.writeTo(address, data);
 
-        if (this.mobo.rom.mmc) {
-            this.mobo.rom.mmc.cpuRegWrite(address, data);
+        if (this.mobo.mmc) {
+            this.mobo.mmc.cpuRegWrite(address, data);
         }
 
         // Mirror three times if it is zero page (from 0x0000 to 0x0100);
@@ -452,9 +453,9 @@ var CPU = Class({
             this.mobo.ram.writeTo(address + 0x0800 * 3, data);
         }
 
-        // Mirror every 8 bytes if it is an IO register between 0x2000 and 0x2008.
-        if (address >= 0x2000 && address < 0x2008) {
-            for(i = address + 8; i <= 0x4000; i+=8) {
+        // Mirror every 8 bytes if it is an IO register between 0x2000 and 0x2007.
+        if (address >= 0x2000 && address <= 0x2007) {
+            for (i = address + 8; i < 0x4000; i+=8) { 
                 this.mobo.ram.writeTo(i, data);
             }
         }
@@ -484,7 +485,7 @@ var CPU = Class({
                 dmaAddress = data[0] * 0x100;
 
                 for (i = 0; i < 256; i++) {
-                    dmaData.push(this.readFromRAM(i + dmaAddress));
+                    dmaData.push(this.mobo.ram.readFrom(i + dmaAddress));
                 }
                 
                 this.mobo.ppu.writeToSRAM(dmaData);
@@ -506,19 +507,61 @@ var CPU = Class({
         Allow CPU memory/register access from other devices.
     */
     readFromRAM: function(address) {
+        var value = 0;
+
+        // Ignore write to the following register if earlier than ~29658 CPU cycles after reset (https://wiki.nesdev.com/w/index.php/PPU_power_up_state).
+        // if (!this.poweredUp) {  
+        //     if (address == CPU.PPU_CONTROL_REGISTER_1 || address == CPU.PPU_MASK_REGISTER || address == CPU.PPU_SCROLL_REGISTER || address == CPU.PPU_ADDR_REGISTER || address == CPU.PPU_DATA_REGISTER) {
+        //         return;
+        //     }
+        // }
+
         switch (address) {
             case CPU.CONTROLLER_1_REGISTER:
-                return this.mobo.controller1.getNextInput();
+                value = this.mobo.controller1.getNextInput();
             break;
 
             case CPU.PPU_STATUS_REGISTER:
+                value = this.mobo.ppu.getPPUStatusRegister();
+                // this.mobo.ppu.vblank = false;
+                // this.mobo.ppu.sprite0Hit = false;
+                // this.mobo.ppu.firstScrollRegister = true;
+                // this.mobo.ppu.vramIOaddress = 0;
+                // this.mobo.ppu.vramIOAddressHighBits = -1;
+                // this.mobo.ppu.vramIOAddressLowBits = -1;
+            break;
 
+            case CPU.PPU_OAM_DATA_REGISTER:
+                value = this.mobo.ppu.readFromSRAM();
+            break;
+
+            case CPU.PPU_DATA_REGISTER:
+                value = this.mobo.ppu.readIOFromVRAM();
             break;
 
             default:
+                value = this.mobo.ram.readFrom(address);
         }
 
-        return this.mobo.ram.readFrom(address);
+        return value;
+    },
+
+    isBackgroundDisabled: function() {
+        var reg = this.mobo.ram.readFrom(CPU.PPU_MASK_REGISTER);
+
+        return ((reg >> 3 & 1) == 0);
+    },
+
+    isSpriteDisabled: function() {
+        var reg = this.mobo.ram.readFrom(CPU.PPU_MASK_REGISTER);
+
+        return ((reg >> 4 & 1) == 0);
+    },  
+
+    isLeftSideClipped: function() {
+        var reg = this.mobo.ram.readFrom(CPU.PPU_MASK_REGISTER);
+
+        return ((reg >> 1 & 1) == 0 || ((reg >> 2 & 1) == 0));
     },
 
     /*
@@ -576,11 +619,15 @@ var CPU = Class({
                 setTimeout(this.run.bind(this), 1);
                 break;
             }
-
+            
             this.checkInterrupt();
             this.emulate();
 
-            if (this.cycles >= PPU.CPU_CYCLES_PER_SCANLINE) {
+            if (this.interruptType) {
+                this.nmiCycles += this.cycles;
+            } 
+
+            if (this.cycles >= CPU.CPU_CYCLES_PER_SCANLINE) {
                 this.mobo.ppu.render();
                 this.cycles = 0;             
             } 
@@ -596,7 +643,7 @@ var CPU = Class({
         switch (type) {
             case CPU.NMI_INTERRUPT:
                 // Check to see if NMI interrupt is allowed by reading bit 7 of PPU Control Register 1.
-                register = this.readFromRAM(CPU.PPU_CONTROL_REGISTER_1);
+                register = this.mobo.ram.readFrom(CPU.PPU_CONTROL_REGISTER_1);
 
                 if (register >> 7 & 1 == 1) {
                     this.isInterrupted = true;
@@ -753,11 +800,13 @@ var Op = Class({
             case CPU.ADDR_MODE_ACCUMULATOR:
                 this.operandAddr = firstOperand;
                 this.operand = firstOperand;
+                this.operandAddr &= 0xFFFF;
             break;
 
             case CPU.ADDR_MODE_IMMEDIATE:
                 this.operandAddr = firstOperand;
                 this.operand = firstOperand;
+                this.operandAddr &= 0xFFFF;
             break;
 
             case CPU.ADDR_MODE_RELATIVE:
@@ -765,6 +814,7 @@ var Op = Class({
                 signedByte = (this.operandAddr > 127 ? this.operandAddr - 256 : this.operandAddr);
                 this.operandAddr = this.cpu.pc_reg + 2 + signedByte;  // Offset starting at the end of this instruction size (2 bytes).
                 this.operand = firstOperand;
+                this.operandAddr &= 0xFFFF;
             break;
 
             case CPU.ADDR_MODE_INDEXED_INDIRECT:
