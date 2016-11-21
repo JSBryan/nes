@@ -35,7 +35,8 @@ var PPU = Class({
         PPU_OAM_DATA_REGISTER: 0x2004,
         PPU_SCROLL_REGISTER: 0x2005,
         PPU_ADDR_REGISTER: 0x2006,
-        PPU_DATA_REGISTER: 0x2007
+        PPU_DATA_REGISTER: 0x2007,
+        UNIVERSAL_BACKDROP_COLOR_ADDRESS: 0x3F00
     },
 
     // Palette from http://nesdev.com/pal.txt. Converted to rgb.
@@ -70,8 +71,9 @@ var PPU = Class({
         this.firstScrollRegister = true;
         this.scrollX = 0;
         this.scrollY = 0;
-        this.sprite0Hit= false;
+        this.sprite0Hit = false;
         this.readBuffer = 0;
+        this.backgroundMask = new Array(PPU.NES_RESOLUTION_WIDTH * PPU.NES_RESOLUTION_HEIGHT);
     },
 
     load: function() {
@@ -155,7 +157,7 @@ var PPU = Class({
                 }
 
                 horizontalIndex = index + 7;    // Flip horizontally so start at the end of the row.
-                verticalIndex = 56 - index;     // Flip vertically so start at last row.
+                verticalIndex = 56 - index;     // Flip vertically so start at last row.                          
 
                 for (j = 0; j < valBits.length; j++) {
                     bit = parseInt(valBits[j]);
@@ -175,6 +177,7 @@ var PPU = Class({
 
                         this.tiles[tileIndex].horizontalData[horizontalIndex] = bit;
                         this.tiles[tileIndex].verticalData[verticalIndex] = bit;
+                        this.tiles[tileIndex].reverseData[63 - index] = bit;
                     } 
 
                     this.tiles[tileIndex].data[index] = bit;  
@@ -184,8 +187,6 @@ var PPU = Class({
                     verticalIndex++;
                 }
             }
-
-            this.tiles[tileIndex].reverseData = this.tiles[tileIndex].data.slice().reverse();
         }  
     },
 
@@ -215,12 +216,11 @@ var PPU = Class({
         this.scrollX = 0;
         this.scrollY = 0;
         this.sprite0Hit= false;
+        this.backgroundMask = new Array(PPU.NES_RESOLUTION_WIDTH * PPU.NES_RESOLUTION_HEIGHT);
 
         _.each(this.oam, function(oam, index, list) {
             list[index] = 0xFF;
         });
-
-        // this.mobo.cpu.writeToRAM(0x2002, [128]);
     },
 
     /*
@@ -229,7 +229,7 @@ var PPU = Class({
     render: function() {
         var nameTableIndex = 0;
 
-        if (this.scanline == -1) {    
+        if (this.scanline == -1) {
             this.mainRenderer.removeAllObjects();
             // this.tilesRenderer.removeAllObjects();
             // this.spriteRenderer.removeAllObjects();
@@ -238,24 +238,25 @@ var PPU = Class({
         } else {
             this.setSprite0Hit(); 
 
-            // Render every 8th scanline.
-            if (this.scanline >= 0 && this.scanline <= 232) {     
-                if (this.scanline % 8 == 0) {
+            if (this.scanline >= 0) {     
+                if (this.scanline <= 232 && this.scanline % 8 == 0) {
                     this.renderScanline(); 
+                }
+
+                if (this.scanline <= 240) {
+                    this.renderSprites();
                 }
             }
 
             if (this.scanline == 240) {
-                this.renderSprites();
-
                 // Debug graphics.
                 // this.renderPalette();
                 // this.renderTiles();
                 // this.renderLoadedSprites();
 
-                for (nameTableIndex = 0; nameTableIndex < 4; nameTableIndex++) {
-                    // this.renderNametable(nameTableIndex);
-                }
+                // for (nameTableIndex = 0; nameTableIndex < 4; nameTableIndex++) {
+                //     this.renderNametable(nameTableIndex);
+                // }
             }
             
             if (this.scanline >= 241 && this.scanline <= 260) {
@@ -311,8 +312,14 @@ var PPU = Class({
             scrollX = Math.floor(this.scrollX / 8),
             rendered = 0,
             tileNum = 0,
-            matrixScanline = (Math.floor(this.scanline / 8)) % 4,       // Scanline in 4x4 color matrix from attribute table.
-            twoBits = 0;                                                // Upper two color bits.
+            matrixScanline = Math.floor((this.scanline + this.scrollY) / 8) % 4,       // Scanline in 4x4 color matrix from attribute table.
+            twoBits = 0,                                              // Upper two color bits.
+            x = 0,
+            y = 0,
+            bgY = 0,
+            paletteColors = [],
+            bgRows = 0,
+            tileString = '';
 
         for (i = 0; i < background.length; i++) {
             if (rendered == 32) {
@@ -325,7 +332,6 @@ var PPU = Class({
                 attributeByte = attributes[Math.floor(i / 4)];          // Each attribute byte covers 4 tiles.
 
                 // Read color info from attribute table per byte (http://tuxnes.sourceforge.net/nestech100.txt).
-                // Starting tile number every 8th scanline. 
                 switch (matrixScanline) {
                     case 0:
                         tileNum = 0;
@@ -396,10 +402,26 @@ var PPU = Class({
                     default:
                 };
 
+                paletteColors = this.getImageColors(twoBits),
+                x = rendered * 8 - this.scrollX % 8;
+                y = this.scanline - this.scrollY % 8;
+                bgY = y;
+                bgRows = bgY * PPU.NES_RESOLUTION_WIDTH;
+
                 _.each(tile, function(pixel, index, list) {
-                    var paletteColors = this.getImageColors(twoBits);
+                    var xIndex = index % 8,
+                        bgX = x + xIndex;
+
+                    if (index > 0 && xIndex == 0) {
+                        bgY++;
+                        bgRows = bgY * PPU.NES_RESOLUTION_WIDTH;
+                    }
 
                     list[index] = paletteColors[pixel];      
+                    tileString += list[index];
+
+                    // Save background palette indices.
+                    this.backgroundMask[bgX + bgRows] = pixel;
 
                     if (list[index]) {
                         toAdd = true;
@@ -408,9 +430,10 @@ var PPU = Class({
 
                 // Only render non-black tiles.
                 if (toAdd) {    
-                    this.mainRenderer.addSprite(tile, rendered * 8 - this.scrollX % 8, this.scanline - this.scrollY % 8);
+                    this.mainRenderer.addSprite(tile, tileString, x, y);
                 }
 
+                tileString = '';
                 rendered++;
                 this.cycles += 64;
             } 
@@ -451,13 +474,12 @@ var PPU = Class({
         Render sprites (http://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation).
     */
     renderSprites: function() {
-        var sramAddress = 0x00,
+        var sramAddress = 0xFC,
             tile = [],
             x = 0,
             y = 0,
             paletteColors = [],
             attributes = null,
-            toAdd = false,
             patternTableIndex = 0,
             flipHorizontally = false,
             flipVertically = false,
@@ -465,25 +487,30 @@ var PPU = Class({
             ppuRegister = this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1),
             bigSprite = ppuRegister >> 5 & 1,       // 8x16 sprite.
             width = 8,
-            height = 8;
+            height = (bigSprite ? 16 : 8),
+            rendered = 0,
+            bgRows = this.scanline * PPU.NES_RESOLUTION_WIDTH,
+            yOffset = 0,
+            tileString = '',
+            toAdd = false;
 
         do {
-            y = this.sram.readFrom(sramAddress);    // Y position.
+            x = this.sram.readFrom(sramAddress + 3);                // X position.
+            y = this.sram.readFrom(sramAddress);                    // Y position.
 
             // Only add sprite if it is in view.
-            if (y <= this.scanline) {
-                toAdd = false;   
+            if (x >= 0 && x <= PPU.NES_RESOLUTION_WIDTH && y <= this.scanline && y + height >= this.scanline) {
+                rendered++; 
                 attributes = this.sram.readFrom(sramAddress + 2);                   // Sprite attributes.
+                behindBackground = (attributes >> 5 & 1 == 1);
                 flipHorizontally = (attributes >> 6 & 1 == 1);
                 flipVertically = (attributes >> 7 & 1 == 1);
-                behindBackground = (attributes >> 5 & 1 == 1);      
                 tileIndex = this.sram.readFrom(sramAddress + 1);                    // Tile index number.
                 paletteColors = this.getSpriteColors(attributes & 3);               // First two bits of sprite attributes is palette index.
-                x = this.sram.readFrom(sramAddress + 3);                            // X position.
+                
+                yOffset = (this.scanline - y) * 8;
 
                 if (bigSprite == 1) {
-                    width = 8;
-                    height = 16;
                     patternTableIndex = this.getBigSpritePatternTableIndex(tileIndex);
                     tile = this.getTile(patternTableIndex, tileIndex - patternTableIndex, flipHorizontally, flipVertically);        // Top tile.
                     tile = tile.concat(this.getTile(patternTableIndex, tileIndex - patternTableIndex + 1, flipHorizontally, flipVertically));           // Bottom tile.
@@ -492,34 +519,46 @@ var PPU = Class({
                     tile = this.getTile(patternTableIndex, tileIndex, flipHorizontally, flipVertically);        
                 }
 
-                if (behindBackground == false) {
-                    _.each(tile, function(pixel, index, list) {
-                        var color = 0;
+                // Get pixels in this scanline.
+                tile = tile.splice(yOffset, yOffset + 8);
 
-                        if (pixel != 0) {
-                            color = paletteColors[pixel];      
+                _.each(tile, function(pixel, index, list) {
+                    var color = 0,
+                        bgX = x + index % 8;    
 
-                            if (color == 0) {                  // Make sure color is showing if it is a transparency color.
-                                color = 1;
-                            }
-
-                            list[index] = color
-                        }
-
-                        if (list[index]) {
-                            toAdd = true;
-                        }
-                    }.bind(this));
-
-                    // Only render non-black tiles.
-                    if (toAdd) {
-                        this.mainRenderer.addSprite(tile, x, y, width, height);
+                    // Pixel is transparent if behind the background flag is on and background pixel is a transparency color.
+                    if (behindBackground && this.backgroundMask[bgX + bgRows] != 0) {
+                        list[index] = 0;
                     }
+
+                    if (list[index] != 0) {
+                        color = paletteColors[pixel];      
+
+                        if (color == 0) {                  // Make sure color is showing if it is a black color.
+                            color = 1;
+                        }
+
+                        list[index] = color;
+                        toAdd = true;   
+                    }
+
+                    tileString += list[index];
+                }.bind(this));
+
+                if (toAdd) {
+                    this.mainRenderer.addSprite(tile, tileString, x, this.scanline, 8, 1);
+                    toAdd = false;
                 }
+                
+                tileString = '';
             }
 
-            sramAddress += 4;
-        } while(sramAddress <= 252);
+            sramAddress -= 4;
+        } while(sramAddress >= 0);
+
+        if (rendered > 8) {
+            this.spriteOverflow = true;
+        }
     },
 
     getImageColors: function(index) {
@@ -546,7 +585,7 @@ var PPU = Class({
             default:
         }
 
-        colors.push(this.palette[this.readFromVRAM(address)]);
+        colors.push(this.palette[this.readFromVRAM(PPU.UNIVERSAL_BACKDROP_COLOR_ADDRESS)]);     // http://wiki.nesdev.com/w/index.php/PPU_palettes
         colors.push(this.palette[this.readFromVRAM(address + 1)]);
         colors.push(this.palette[this.readFromVRAM(address + 2)]);
         colors.push(this.palette[this.readFromVRAM(address + 3)]);
@@ -665,18 +704,22 @@ var PPU = Class({
         var x = 0,
             y = -8,
             paletteColors = ['0', '16777215', '8325888', '1785695'],
-            tile = [];
+            tile = [],
+            tileString = '';
 
         _.each(this.tiles, function(tile, index) {
             var dividerHeight = (index > 255 ? 5 : 0);
 
             if (tile) {
                 tile = tile.data.slice();
-                
+                tileString = '';
+
                 _.each(tile, function(pixel, index, list) {
                     if (pixel != 0) {
                         list[index] = paletteColors[pixel];      // Pixel color in RGB color code.
                     }
+
+                    tileString += list[index];
                 }.bind(this));
 
                 x = index % 16 * 8;
@@ -685,7 +728,8 @@ var PPU = Class({
                     y += 8;
                 }
 
-                this.tilesRenderer.addSprite(tile, x, y + dividerHeight);
+                this.tilesRenderer.addSprite(tile, tileString, x, y + dividerHeight);
+                tileString = '';
             }
         }.bind(this));
     },
@@ -701,7 +745,8 @@ var PPU = Class({
             ppuRegister = this.mobo.cpu.readFromRAM(PPU.PPU_CONTROL_REGISTER_1),
             bigSprite = ppuRegister >> 5 & 1,       // 8x16 sprite
             width = 8,
-            height = 8;
+            height = 8,
+            tileString = '';
 
         do {
             tileIndex = this.sram.readFrom(sramAddress + 1);
@@ -723,10 +768,13 @@ var PPU = Class({
                 if (pixel != 0) {
                     list[index] = paletteColors[pixel];      // Pixel color in RGB color code.
                 }
+
+                tileString += list[index];
             }.bind(this));
             
-            this.spriteRenderer.addSprite(tile, x, y, width, height);
+            this.spriteRenderer.addSprite(tile, tileString, x, y, width, height);
 
+            tileString = '';
             x += 8;
 
             if (x % 64 == 0) {
@@ -800,21 +848,25 @@ var PPU = Class({
             switch (index) {
                 case 0:
                     address = PPU.NAME_TABLE_0_START;
+                    mirrorAddress = PPU.NAME_TABLE_2_START;
                     horizontalAddress = PPU.NAME_TABLE_1_START;
                 break;
 
                 case 1:
                     address = PPU.NAME_TABLE_1_START;
+                    mirrorAddress = PPU.NAME_TABLE_3_START;
                     horizontalAddress = PPU.NAME_TABLE_0_START;
                 break;
 
                 case 2:
                     address = PPU.NAME_TABLE_2_START;
+                    mirrorAddress = PPU.NAME_TABLE_0_START;
                     horizontalAddress = PPU.NAME_TABLE_3_START;
                 break;
 
                 case 3:
                     address = PPU.NAME_TABLE_3_START;
+                    mirrorAddress = PPU.NAME_TABLE_1_START;
                     horizontalAddress = PPU.NAME_TABLE_2_START;
                 break;
 
@@ -934,7 +986,8 @@ var PPU = Class({
             x = 0,
             y = 0,
             deltaX = 0,
-            deltaY = 0;
+            deltaY = 0,
+            tileString = '';
 
         switch (index) {
             case 0:
@@ -967,10 +1020,13 @@ var PPU = Class({
                 if (pixel != 0) {
                     list[index] = paletteColors[pixel];      
                 }
+
+                tileString += list[index];
             });
 
-            this.nameTableRenderer.addSprite(tile, x + deltaX, y + deltaY);
+            this.nameTableRenderer.addSprite(tile, tileString, x + deltaX, y + deltaY);
 
+            tileString = '';
             deltaX += 8;
 
             if (deltaX >= 256) {
@@ -987,7 +1043,8 @@ var PPU = Class({
             colors = [],
             x = 0,
             y = 0,
-            toAdd = false;
+            toAdd = false,
+            squareString = '';
 
         for (i = 0; i < 4; i++) {
             colors = this.getImageColors(i);
@@ -1001,13 +1058,15 @@ var PPU = Class({
 
                     for (j = 0; j < 64; j++) {
                         square.push(color);
+                        squreString += color;
                     }
                 }
 
                 if (toAdd) {
-                    this.paletteRenderer.addSprite(square, x, y); 
+                    this.paletteRenderer.addSprite(square, squareString, x, y); 
                 }
 
+                squareString = '';
                 x += 8;
 
                 if (x >= 32) {
@@ -1016,6 +1075,8 @@ var PPU = Class({
                 }   
             }.bind(this));
         }
+
+        squareString = '';
 
         for (i = 0; i < 4; i++) {
             colors = this.getSpriteColors(i);
@@ -1029,13 +1090,15 @@ var PPU = Class({
 
                     for (j = 0; j < 64; j++) {
                         square.push(color);
+                        squreString += color;
                     }
                 }
 
                 if (toAdd) {
-                    this.paletteRenderer.addSprite(square, x, y); 
+                    this.paletteRenderer.addSprite(square, squareString, x, y); 
                 }
 
+                squareString = '';
                 x += 8;
 
                 if (x >= 32) {
@@ -1089,19 +1152,16 @@ var PPU = Class({
         var regVal = this.mobo.cpu.readFromRAM(PPU.PPU_MASK_REGISTER),
             val = 0;
         
-        // if (this.vblank || ((regVal >> 3 & 1) == 0 && (regVal >> 4 & 1) == 0)) {
+        if (this.vblank || ((regVal >> 3 & 1) == 0 && (regVal >> 4 & 1) == 0)) {
             if (this.vramIOaddress < 0x3F00) {
                 val = this.readBuffer;
-                // val = this.vram.readFrom(this.vramIOaddress);
                 this.readBuffer = this.vram.readFrom(this.vramIOaddress);
             } else {
                 // Palette returns the value and buffer is the mirror data before it (http://nesdev.com/NinTech.txt).
                 val = this.vram.readFrom(this.vramIOaddress);
                 this.readBuffer = this.vram.readFrom(this.vramIOaddress - 0x1000);  
             }
-
-            this.vramIOaddress += ((this.mobo.ram.readFrom(PPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
-        // }
+        }
     
         return val;
     },
@@ -1138,15 +1198,15 @@ var PPU = Class({
             this.vram.writeTo(this.vramIOaddress + 0x4000, data);
 
             // Name table PPU mirrors.
-            this.vram.writeTo(this.vramIOaddress + 0x1000, data);
+            // this.vram.writeTo(this.vramIOaddress + 0x1000, data);
 
             // Name table ROM mirrors.
             if (this.mobo.mmc.rom.verticalMirroring) {
-                if (this.vramIOaddress >= PPU.NAME_TABLE_0_START && this.vramIOaddress < PPU.ATTRIBUTE_TABLES_0_START || this.vramIOaddress >= PPU.NAME_TABLE_1_START && this.vramIOaddress < PPU.ATTRIBUTE_TABLES_1_START) {
-                    this.vram.writeTo(this.vramIOaddress + 0x800, data);   
+                if (this.vramIOaddress >= PPU.NAME_TABLE_0_START && this.vramIOaddress < PPU.NAME_TABLE_2_START) {
+                    this.vram.writeTo(this.vramIOaddress + 0x800, data);
                 }
             } else if (this.mobo.mmc.rom.horizontalMirroring) {
-                if (this.vramIOaddress >= PPU.NAME_TABLE_0_START && this.vramIOaddress < PPU.ATTRIBUTE_TABLES_0_START || this.vramIOaddress >= PPU.NAME_TABLE_2_START && this.vramIOaddress < PPU.ATTRIBUTE_TABLES_2_START) {
+                if (this.vramIOaddress >= PPU.NAME_TABLE_0_START && this.vramIOaddress < PPU.NAME_TABLE_1_START || this.vramIOaddress >= PPU.NAME_TABLE_2_START && this.vramIOaddress < 0x3000) {
                     this.vram.writeTo(this.vramIOaddress + 0x400, data);
                 }
             } else if (this.mobo.mmc.rom.fourScreenVRAM) {
@@ -1197,8 +1257,6 @@ var PPU = Class({
                 default:
 
             }
-
-            this.vramIOaddress += ((this.mobo.ram.readFrom(PPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
         }
     },
 
@@ -1346,7 +1404,7 @@ var Renderer = Class({
             settings = {
                 view: false,
                 transparent: false,
-                antialias: false,
+                antialias: true,
                 preserveDrawingBuffer: false,
                 resolution: 1
             };
@@ -1388,14 +1446,13 @@ var Renderer = Class({
         }
     },
 
-    addSprite: function(graphData, x, y, width, height, index) {
+    addSprite: function(graphData, graphDataToString, x, y, width, height) {
         var sprite = null,
             canvas = null,
             context = null,
             imageData = null,
             width = width || 8,
             height = height || 8,
-            graphDataToString = graphData.toString(),
             texture = this.textures[graphDataToString];
 
         if (!texture) {
@@ -1438,15 +1495,7 @@ var Renderer = Class({
         sprite.x = x;
         sprite.y = y;
 
-        if (_.isUndefined(index)) {
-            this.stage.addChild(sprite);
-        } else {
-            if (index < 0) {
-                index = 0;
-            }
-
-            this.stage.addChildAt(sprite, index);
-        }   
+        this.stage.addChild(sprite);
     
         return sprite;
     },

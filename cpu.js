@@ -62,6 +62,7 @@ var CPU = Class({
         this.instructions = 0;
         this.isNewFrame = false;
         this.nmiCycles = 0;
+        this.vramAccessed = false;
     },
 
     load: function() {
@@ -386,6 +387,7 @@ var CPU = Class({
         this.instructions = 0;
         this.isNewFrame = false;
         this.cycles = 0;
+        this.vramAccessed = true;
     },
 
     pushStack: function(data) {
@@ -475,6 +477,7 @@ var CPU = Class({
 
             case CPU.PPU_DATA_REGISTER: 
                 this.mobo.ppu.writeIOToVRAM(data);
+                this.vramAccessed = true;
             break;
 
             case CPU.PPU_SCROLL_REGISTER:
@@ -537,6 +540,7 @@ var CPU = Class({
 
             case CPU.PPU_DATA_REGISTER:
                 value = this.mobo.ppu.readIOFromVRAM();
+                this.vramAccessed = true;
             break;
 
             default:
@@ -584,7 +588,7 @@ var CPU = Class({
                 //     debug_cycles: this.cycles,
                 //     debug_instructions: this.instructions
                 // });
-                
+
                 opInstance = this.opInstances[op.instruction];
                 opInstance.setOp(op);
                 opInstance.execute();
@@ -616,10 +620,15 @@ var CPU = Class({
             if (this.isNewFrame) {
                 this.instructions = 0;
                 this.isNewFrame = false;
-                setTimeout(this.run.bind(this), 1);
+                setTimeout(this.run.bind(this), 1); 
                 break;
             }
-            
+
+            if (this.vramAccessed) {
+                this.mobo.ppu.vramIOaddress += ((this.readFromRAM(CPU.PPU_CONTROL_REGISTER_1) >> 2 & 1) == 0 ? 1 : 32);
+                this.vramAccessed = false;
+            }
+
             this.checkInterrupt();
             this.emulate();
 

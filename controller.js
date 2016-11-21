@@ -35,7 +35,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[0] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_A, function(e) {
                 e.stopPropagation();
@@ -48,7 +48,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[1] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_B, function(e) {
                 e.stopPropagation();
@@ -61,7 +61,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[2] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_SELECT, function(e) {
                 e.stopPropagation();
@@ -74,7 +74,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[3] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_START, function(e) {
                 e.stopPropagation();
@@ -87,7 +87,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[4] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_UP, function(e) {
                 e.stopPropagation();
@@ -100,7 +100,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[5] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_DOWN, function(e) {
                 e.stopPropagation();
@@ -112,8 +112,8 @@ var Controller = Class({
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_LEFT, function(e) {
                 e.stopPropagation();
                 e.preventDefault();
-                self.inputs[6] = 1;
-            });
+                self.inputs[6] = 1; 
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_LEFT, function(e) {
                 e.stopPropagation();
@@ -126,7 +126,7 @@ var Controller = Class({
                 e.stopPropagation();
                 e.preventDefault();
                 self.inputs[7] = 1;
-            });
+            }, 'keydown');
 
             mousetrap.bind(Controller.CONTROLLER_1_BUTTON_RIGHT, function(e) {
                 e.stopPropagation();
@@ -142,10 +142,14 @@ var Controller = Class({
         this.inputIndex = -1;
     },
 
-    getNextInput: function(index) { 
-        this.inputIndex++;
+    getNextInput: function(index) {
+        var val = this.inputs[++this.inputIndex];
 
-        return this.inputs[this.inputIndex];
+        if (this.inputIndex > 7) {
+            val = 1;
+        }
+
+        return val;
     },
 
     dump: function() {
