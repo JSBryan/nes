@@ -3,7 +3,7 @@ var Controller = Class({
         CONTROLLER_1_PORT: 0x4016,
         CONTROLLER_1_BUTTON_A: 's',
         CONTROLLER_1_BUTTON_B: 'a',
-        CONTROLLER_1_BUTTON_SELECT: 'shift',
+        CONTROLLER_1_BUTTON_SELECT: '\'',
         CONTROLLER_1_BUTTON_START: 'enter',
         CONTROLLER_1_BUTTON_UP: 'up',
         CONTROLLER_1_BUTTON_DOWN: 'down',
@@ -145,14 +145,10 @@ var Controller = Class({
     getNextInput: function(index) {
         var val = this.inputs[++this.inputIndex];
 
-        if (this.inputIndex > 7) {
-            val = 1;
-        }
-
         return val;
     },
 
     dump: function() {
-
+        
     }
 });
