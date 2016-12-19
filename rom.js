@@ -41,7 +41,6 @@ var ROM = Class({
             this.nibbleMapper = this.lowerNibbleMapper | this.upperNibbleMapper << 4;
             this.loadPRG();
             this.loadCHR();
-            this.dump();
             this.mapMemory();
         } catch(e) {
             throw e;

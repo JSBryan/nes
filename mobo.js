@@ -15,7 +15,8 @@ var Mobo = Class({
 
     load: function() {
         var self = this,
-        	cartridge = $('#cartridge');
+        	cartridge = $('#cartridge'),
+        	fullscreenButton = $('#fullscreenButton');
 
         this.cpu = new CPU({mobo: this});
         this.ram = new RAM({mobo: this});
@@ -45,7 +46,9 @@ var Mobo = Class({
 						self.controller1.load();
 
 						self.cpu.run();
+						fullscreenButton.show();
 					} catch(e) {
+						fullscreenButton.hide();
 						console.log(e.message);
 			            console.log(e.stack);
 					}
@@ -54,6 +57,15 @@ var Mobo = Class({
 				reader.readAsArrayBuffer(file);	
 	      	}
 	    });
+
+	    fullscreenButton.on('click', function() {
+	    	self.toggleFullScreen();
+	    })
+    },
+
+    toggleFullScreen: function() {
+    	$('#mainDisplay canvas').get(0).webkitRequestFullScreen();
+    	this.ppu.toggleFullScreen(true);
     },
 
     dump: function() {

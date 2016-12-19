@@ -63,6 +63,9 @@ var CPU = Class({
         this.nmiCycles = 0;
         this.vramAccessed = false;
         this.totalCycles = 0;
+        this.backgroundDisabled = false;
+        this.spriteDisabled = false;
+        this.leftSideClipped = false;
     },
 
     load: function() {
@@ -387,6 +390,9 @@ var CPU = Class({
         this.isNMI = false;
         this.cycles = 0;
         this.vramAccessed = false;
+        this.backgroundDisabled = false;
+        this.spriteDisabled = false;
+        this.leftSideClipped = false;
     },
 
     pushStack: function(data) {
@@ -489,6 +495,12 @@ var CPU = Class({
                 this.mobo.ppu.setBigSprite(data[0]);
             break;
             
+            case CPU.PPU_MASK_REGISTER:     // 0x2001
+                this.setBackgroundDisabled(data[0]);
+                this.setSpriteDisabled(data[0]);
+                this.setLeftSideClipped(data[0]);
+            break;
+
             case CPU.PPU_OAM_ADDR_REGISTER:    // 0x2003
                 this.mobo.ppu.setSRAMaddress(data[0]);
             break;
@@ -570,22 +582,28 @@ var CPU = Class({
         return value;
     },
 
-    isBackgroundDisabled: function() {
-        var reg = this.mobo.ram.readFrom(CPU.PPU_MASK_REGISTER);
+    setBackgroundDisabled: function(reg) {
+        this.backgroundDisabled = ((reg >> 3 & 1) == 0);
+    },
 
-        return ((reg >> 3 & 1) == 0);
+    isBackgroundDisabled: function() {
+        return this.backgroundDisabled;
+    },
+
+    setSpriteDisabled: function(reg) {
+        this.spriteDisabled = ((reg >> 4 & 1) == 0);
     },
 
     isSpriteDisabled: function() {
-        var reg = this.mobo.ram.readFrom(CPU.PPU_MASK_REGISTER);
-
-        return ((reg >> 4 & 1) == 0);
+        return this.spriteDisabled;
     },  
 
-    isLeftSideClipped: function() {
-        var reg = this.mobo.ram.readFrom(CPU.PPU_MASK_REGISTER);
+    setLeftSideClipped: function(reg) {
+        this.leftSideClipped = ((reg >> 1 & 1) == 0 || ((reg >> 2 & 1) == 0));
+    },
 
-        return ((reg >> 1 & 1) == 0 || ((reg >> 2 & 1) == 0));
+    isLeftSideClipped: function() {
+        return this.leftSideClipped;
     },
 
     /*
@@ -643,7 +661,7 @@ var CPU = Class({
 
             this.poweredUp = true;
             // this.mobo.ppu.run(this.cycles);
-            // this.cycles = 0;
+            this.cycles = 7;
         }
 
         for (;;) {
@@ -722,7 +740,8 @@ var CPU = Class({
             this.isInterrupted = false;
             this.interrupt_disabled_flag = 1;
             this.break_flag = 0;    // http://wiki.nesdev.com/w/index.php/CPU_status_flag_behavior
-            this.unused_flag = 1;   
+            this.unused_flag = 1; 
+            this.cycles += 7;  
         }
     },
 
@@ -779,7 +798,7 @@ var Op = Class({
             case CPU.ADDR_MODE_ZERO_PAGE:
                 this.operandAddr = firstOperand;
                 this.operandAddr &= 0xFF;
-                this.operand = this.cpu.readFromRAM(this.operandAddr);
+                this.operand = this.cpu.readFromRAM(this.operandAddr) & 0xFF;
             break;
 
             case CPU.ADDR_MODE_ZERO_PAGE_X:
@@ -899,11 +918,9 @@ var Op = Class({
             spaces = new Array(40 - (runningAddress.length + instruction.length + operand.length + addrMode.length)).toString().replace(/,/g, ' '),
             accu = (trace.debug_acc_reg).toString(16).toUpperCase(),
             x = (trace.debug_x_reg).toString(16).toUpperCase(),
-            y = (trace.debug_y_reg).toString(16).toUpperCase(),
-            cycles = trace.debug_cycles * 3 + '';    // PPU ouputs three cycles/dots per CPU cycle.
+            y = (trace.debug_y_reg).toString(16).toUpperCase();
 
         runningAddress = '0000'.substr(runningAddress.length) + runningAddress;
-        cycles = '   '.substr(cycles.length) + cycles;
 
         // if (accu.length < 2) {
         //     accu = 0 + accu;
@@ -920,7 +937,7 @@ var Op = Class({
         // console.log(runningAddress, instruction, operand, addrMode, spaces, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase(), 'Instruction:' + trace.debug_instructions);
         console.log(runningAddress, trace.debug_op.opCode.toString(16).toUpperCase(), 'A:' + accu.toLowerCase(), 'X:' + x.toLowerCase(), 'Y:' + y.toLowerCase(), 'P:' + (trace.debug_ps_reg).toString(16), 'SP:' + (trace.debug_sp_reg).toString(16), trace.debug_instructions);
         // To compare with http://www.qmtpro.com/~nes/misc/nestest.log file.
-        // console.log(runningAddress, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase(), 'CYC:' + cycles);
+        // console.log(runningAddress, 'A:' + accu, 'X:' + x, 'Y:' + y, 'P:' + (trace.debug_ps_reg).toString(16).toUpperCase(), 'SP:' + (trace.debug_sp_reg).toString(16).toUpperCase());
     }
 });
 
@@ -1457,24 +1474,21 @@ var LSRop = Class(Op, {
     },
 
     execute: function() {
-        var temp = 0x00;
-
         BRKop.$superp.execute.call(this);
 
-        temp = this.cpu.acc_reg;
-
         if (this.op.addrMode == CPU.ADDR_MODE_ACCUMULATOR) {
+            this.cpu.carry_flag = this.cpu.acc_reg & 1;
             this.cpu.acc_reg >>= 1;
-            this.cpu.carry_flag = temp & 1;
+            this.cpu.acc_reg &= 0xFF;
             this.cpu.zero_flag = (this.cpu.acc_reg == 0 ? 1 : 0);
             this.cpu.negative_flag = this.cpu.acc_reg >> 7;
         } else {
+            this.cpu.carry_flag = this.operand & 1;
             this.operand >>= 1;
-            this.cpu.carry_flag = temp & 1;
+            this.operand &= 0xFF;
             this.cpu.writeToRAM(this.operandAddr, [this.operand]);
             this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
             this.cpu.negative_flag = this.operand >> 7;
-            this.cpu.writeToRAM(this.operandAddr, [this.operand]);
         }
     }
 });
@@ -1607,7 +1621,7 @@ var RORop = Class(Op, {
             this.cpu.negative_flag = this.cpu.acc_reg >> 7;
         } else {
             this.cpu.carry_flag = this.operand & 1;  
-            this.operand = this.operand >> 1 + temp;
+            this.operand = this.operand >> 1;
             this.operand = (temp ? this.operand + 128 : this.operand);
             this.cpu.zero_flag = (this.operand == 0 ? 1 : 0);
             this.cpu.negative_flag = this.operand >> 7;
