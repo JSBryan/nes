@@ -655,12 +655,11 @@ var CPU = Class({
     run: function() { 
         // Powering up NES.
         if (!this.poweredUp) {
-            // while (this.cycles < 29658) {
-            //     this.emulate();
-            // }
+            while (this.cycles < 29658) {
+                this.emulate();
+            }
 
             this.poweredUp = true;
-            // this.mobo.ppu.run(this.cycles);
             this.cycles = 7;
         }
 
