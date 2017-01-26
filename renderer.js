@@ -53,6 +53,8 @@ var Renderer = Class({
             $(this.renderer.view).on('click', function() {
                 self.setFocus();
             });
+
+            this.setFocus();
         }
 
         // Create a container object called the `stage`.

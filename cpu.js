@@ -447,6 +447,12 @@ var CPU = Class({
             }
         }
 
+        // APU registers.
+        if (address >= 0x4000 && address <= 0x4017 && address != 0x4014 && address != 0x4016) {
+            this.mobo.apu.writeReg(address, data);
+            return;
+        }
+
         oldValue = this.mobo.ram.readFrom(address);
         this.mobo.ram.writeTo(address, data);
 
@@ -534,7 +540,7 @@ var CPU = Class({
                 this.cycles += 512;
             break;
 
-            case CPU.CONTROLLER_1_REGISTER:     // Controller 1 register. A 1/0 write sequence (https://wiki.nesdev.com/w/index.php/Standard_controller).
+            case CPU.CONTROLLER_1_REGISTER:     // Controller 1 register (0x4016). A 1/0 write sequence (https://wiki.nesdev.com/w/index.php/Standard_controller).
                 if (oldValue == 1 && data[0] == 0) {
                     this.mobo.controller1.reset();
                 }
@@ -680,14 +686,15 @@ var CPU = Class({
             this.checkInterrupt();
             this.emulate();
             this.mobo.ppu.run(this.cycles);
+            this.mobo.apu.run(this.cycles);
             this.totalCycles += this.cycles;
             this.cycles = 0;
 
             // To run test roms.
-            if (this.instructions % 100000 == 0) {
-                setTimeout(this.run.bind(this), 1); 
-                break;
-            }
+            // if (this.instructions % 100000 == 0) {
+            //     setTimeout(this.run.bind(this), 1); 
+            //     break;
+            // }
         }
     },
 

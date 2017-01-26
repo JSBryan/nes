@@ -21,6 +21,7 @@ var Mobo = Class({
         this.cpu = new CPU({mobo: this});
         this.ram = new RAM({mobo: this});
         this.ppu = new PPU({mobo: this, mainDisplayDevice: $('#mainDisplay'), tilesDisplayDevice: $('#tilesDisplay'), nameTableDisplayDevice: $('#nameTableDisplay'), paletteDisplayDevice: $('#paletteDisplay')});
+        this.apu = new APU({mobo: this});
 
 	    cartridge.on('change', function(e) {
 	      	var file = this.files[0],
@@ -40,6 +41,7 @@ var Mobo = Class({
 						self.ppu.load();
 						self.rom.load();
 						self.cpu.load();
+						self.apu.load();
 
 						self.controller1 = new Controller({mobo: self, port: 0x4016, displayDevice: $('#mainDisplay').children('canvas').get(0)});
         				self.controller2 = new Controller({mobo: self, port: 0x4017, displayDevice: $('#mainDisplay').children('canvas').get(0)});
@@ -60,7 +62,7 @@ var Mobo = Class({
 
 	    fullscreenButton.on('click', function() {
 	    	self.toggleFullScreen();
-	    })
+	    });
     },
 
     toggleFullScreen: function() {
