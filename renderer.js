@@ -91,16 +91,18 @@ var Renderer = Class({
     },
 
     addBackgroundPixel: function(color, x, y) {
-        var index = (this.width * y + x) * 4,
-            red = color[0],
-            green = color[1],
-            blue = color[2],
-            alpha = 255;
+        if (x >= 0 && x <= this.width - 1 && y >= 0 && y <= this.height - 1) {
+            var index = (this.width * y + x) * 4,
+                red = color[0],
+                green = color[1],
+                blue = color[2],
+                alpha = 255;
 
-        this.bgImageData.data[index] = red;
-        this.bgImageData.data[index + 1] = green;
-        this.bgImageData.data[index + 2] = blue;
-        this.bgImageData.data[index + 3] = alpha;
+            this.bgImageData.data[index] = red;
+            this.bgImageData.data[index + 1] = green;
+            this.bgImageData.data[index + 2] = blue;
+            this.bgImageData.data[index + 3] = alpha;
+        }
     },
 
     addSprite: function(graphData, graphId, x, y, width, height) {

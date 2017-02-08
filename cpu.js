@@ -28,6 +28,7 @@ var CPU = Class({
         PPU_OAM_DMA_REGISTER: 0x4014,
         CONTROLLER_1_REGISTER: 0x4016,
         CONTROLLER_2_REGISTER: 0x4017,
+        APU_STATUS_REGISTER: 0x4015,
         NMI_INTERRUPT: 'NMI interrupt',                  // NMI interrupt, occurs at start of v-blank by PPU.
         CPU_CYCLES_PER_SCANLINE: 113.667                 // Number of CPU cycles per scanline.
     },
@@ -446,7 +447,7 @@ var CPU = Class({
                 return;
             }
         }
-
+        
         // APU registers.
         if (address >= 0x4000 && address <= 0x4017 && address != 0x4014 && address != 0x4016) {
             this.mobo.apu.writeReg(address, data);
@@ -557,11 +558,11 @@ var CPU = Class({
         var value = 0;
 
         // Ignore write to the following register if earlier than ~29658 CPU cycles after reset (https://wiki.nesdev.com/w/index.php/PPU_power_up_state).
-        // if (!this.poweredUp) {  
-        //     if (address == CPU.PPU_CONTROL_REGISTER_1 || address == CPU.PPU_MASK_REGISTER || address == CPU.PPU_SCROLL_REGISTER || address == CPU.PPU_ADDR_REGISTER || address == CPU.PPU_DATA_REGISTER) {
-        //         return;
-        //     }
-        // }
+        if (!this.poweredUp) {  
+            if (address == CPU.PPU_CONTROL_REGISTER_1 || address == CPU.PPU_MASK_REGISTER || address == CPU.PPU_SCROLL_REGISTER || address == CPU.PPU_ADDR_REGISTER || address == CPU.PPU_DATA_REGISTER) {
+                return;
+            }
+        }
 
         switch (address) {
             case CPU.CONTROLLER_1_REGISTER:
@@ -579,6 +580,10 @@ var CPU = Class({
             case CPU.PPU_DATA_REGISTER:     // 0x2007
                 value = this.mobo.ppu.readIOFromVRAM();
                 this.vramAccessed = true;
+            break;
+
+            case CPU.APU_STATUS_REGISTER:   // 0x4015
+                value = this.mobo.apu.getStatus();
             break;
 
             default:
@@ -691,10 +696,10 @@ var CPU = Class({
             this.cycles = 0;
 
             // To run test roms.
-            // if (this.instructions % 100000 == 0) {
-            //     setTimeout(this.run.bind(this), 1); 
-            //     break;
-            // }
+            if (this.instructions % 100000 == 0) {
+                setTimeout(this.run.bind(this), 1); 
+                break;
+            }
         }
     },
 

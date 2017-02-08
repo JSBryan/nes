@@ -74,6 +74,8 @@ var PPU = Class({
         this.nextScrollY = 0;
         this.scrollX = 0;
         this.scrollY = 0;
+        this.scrollXmod8 = 0;
+        this.scrollYmod8 = 0;
         this.sprite0Hit = false;
         this.readBuffer = 0;
         this.backgroundMask = new Array(PPU.NES_RESOLUTION_WIDTH * PPU.NES_RESOLUTION_HEIGHT);
@@ -106,7 +108,8 @@ var PPU = Class({
             displayDevice: this.mainDisplayDevice,
             width: PPU.NES_RESOLUTION_WIDTH,
             height: PPU.NES_RESOLUTION_HEIGHT,
-            focus: true
+            focus: true,
+            ppu: this
         });
         this.mainRenderer.load();
 
@@ -496,10 +499,8 @@ var PPU = Class({
         Render a nametable tile in a scanline.
     */  
     renderScanline: function(index) {   
-        var scrollX = this.scrollX % 8,
-            scrollY = this.scrollY % 8,
-            i = index,
-            x = index * 8 - scrollX,
+        var i = index,
+            x = index * 8 - this.scrollXmod8,
             paletteColors = [],
             bgRows = this.scanline * PPU.NES_RESOLUTION_WIDTH,
             xOffset = 0,
@@ -508,7 +509,7 @@ var PPU = Class({
             tileIndex = 0;
 
         if (this.currentScanline.tiles[i] && this.currentScanline.tiles[i].length) {
-            xOffset = (index == 0 ? scrollX : 0);
+            xOffset = (index == 0 ? this.scrollXmod8 : 0);
             yOffset = this.scanline % 8 * 8;
             paletteColors = this.getImageColors(this.currentScanline.attributes[i]);
             tileIndex = yOffset + xOffset;
@@ -522,7 +523,7 @@ var PPU = Class({
                     this.backgroundMask[x + bgRows] = this.currentScanline.tiles[i][tileIndex];
 
                     if (pixel) {
-                        this.mainRenderer.addBackgroundPixel(pixel, x, this.scanline);
+                        this.mainRenderer.addBackgroundPixel(pixel, x, this.scanline - this.scrollYmod8);
                     }
                     
                     xOffset++;
@@ -535,10 +536,9 @@ var PPU = Class({
     },
 
     renderScanlineSpriteBased: function(index) {
-        var scrollX = this.scrollX % 8,
-            scrollY = this.scrollY % 8,
+        var scrollY = this.scrollY % 8,
             i = index,
-            x = index * 8 - scrollX,
+            x = index * 8 - this.scrollXmod8,
             paletteColors = [],
             bgOffset = x + this.scanline * PPU.NES_RESOLUTION_WIDTH,
             graphData = [],
@@ -1554,13 +1554,20 @@ var PPU = Class({
         var data = parseInt(data);
 
         if (this.firstScrollRegister) {
-            this.scrollX = data;
+            if (this.scrollX != data) {
+                this.scrollX = data;
+                this.scrollXmod8 = this.scrollX % 8;
+            }
             this.firstScrollRegister = false;
         } else {
             this.firstScrollRegister = true;
 
             if (data < 240) {
-                this.scrollY = data;
+                if (this.scrollY != data) {
+                    this.scrollY = data;
+                    this.scrollYmod8 = this.scrollY % 8;
+                }
+                
             } 
         }
 
