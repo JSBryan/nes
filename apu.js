@@ -21,7 +21,8 @@ var APU = Class({
         STATUS_REGISTER: 0x4015,
         FRAME_SEQUENCE_REGISTER: 0x4017,              // Sequencer mode: 0 selects 4-step sequence, 1 selects 5-step sequence
         FRAME_SEQUENCE_CYCLES: 7457,                 // Frame sequence step in CPU cycles.
-        FREQUENCY_CYCLES: 22050
+        SAMPLE_AVERAGE: 20,
+        FREQUENCY_CYCLES: 1102
     },
 
     frameSequenceModes: [
@@ -29,20 +30,18 @@ var APU = Class({
         [1, 2, 3, 4, 5, 0]
     ],
 
-    lengthTable: [10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30],
-
+    lengthTable: [10, 254, 20,  2, 40,  4, 80,  6, 160,  8, 60, 10, 14, 12, 26, 14,12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30],
     pulseOutTable: [],
-
     tndOutTable: [],
-
-    masterVolume: 10,
 
     constructor: function(options) {
         this.mobo = options.mobo;
+        this.audioOutput = new AudioOutput();
         this.pulseChannel1 = new PulseChannel({ apu: this });
         this.pulseChannel2 = new PulseChannel({ apu: this });
         this.triangleChannel = new TriangleChannel({ apu: this });
         this.noiseChannel = new NoiseChannel({ apu: this });
+        this.dmcChannel = new DMCChannel({ apu: this });
         this.frameSequenceMode = 0;
         this.samples = [];
         this.frameSequenceCountDown = 0;
@@ -55,6 +54,7 @@ var APU = Class({
         this.frequencyCountDown = 0;
         this.irqFlag = 0;
         this.frameInterruptFlag = 0;
+        this.dmcInterrupt = 0;
     },
 
     load: function() {
@@ -71,6 +71,7 @@ var APU = Class({
         this.pulseChannel2.reset();
         this.triangleChannel.reset();
         this.noiseChannel.reset();
+        this.dmcChannel.reset();
         this.frameSequenceMode = 0;
         this.samples = [];
         this.frameSequenceCountDown = 0;
@@ -83,6 +84,7 @@ var APU = Class({
         this.frequencyCountDown = 0;
         this.irqFlag = 0;
         this.frameInterruptFlag = 0;
+        this.dmcInterrupt = 0;
     },
 
     /*
@@ -181,19 +183,21 @@ var APU = Class({
             break;
 
             case APU.DMC_FREQ:      // 0x4010
-
+                this.dmcChannel.setIRQ(data);
+                this.dmcChannel.setLoop(data);
+                this.dmcChannel.setRate(data);
             break;
 
             case APU.DMC_RAW:       // 0x4011
-
+                this.dmcChannel.setOutputLevel(data);
             break;
 
             case APU.DMC_START:     // 0x4012
-
+                this.dmcChannel.setSampleAddress(data);
             break;
 
             case APU.DMC_LEN:       // 0x4013
-
+                this.dmcChannel.setSampleLength(data);
             break;              
 
             case APU.STATUS_REGISTER:   // 0x4015
@@ -219,7 +223,7 @@ var APU = Class({
         }
 
         if (this.irqFlag == 1) {
-            this.frameInterruptFlag = false;
+            this.frameInterruptFlag = 0;
         }
     }, 
 
@@ -232,19 +236,31 @@ var APU = Class({
 
         if (this.pulse1Enabled == 0) {
             this.pulseChannel1.setLengthCounter(0);
-        }
+        } 
 
-        if (this.pulse2Enabled) {
+        if (this.pulse2Enabled == 0) {
             this.pulseChannel2.setLengthCounter(0);
         }
 
         if (this.triangleEnabled == 0) {
             this.triangleChannel.setLengthCounter(0);
-        } 
+        }
 
         if (this.noiseEnabled == 0) {
             this.noiseChannel.setLengthCounter(0);
+        } 
+
+        if (this.dmcEnabled == 0) {
+            this.dmcChannel.remainingLength = 0;
+        } else {
+            if (this.dmcChannel.remainingLength == 0) {
+                this.remainingLength = this.dmcChannel.sampleLength;
+                this.remainingLength = this.dmcChannel.sampleLength;
+                this.sampleAddress = this.dmcChannel.oldSampleAddress;
+            }    
         }
+
+        this.dmcInterrupt = 0;
     },
 
     getStatus: function() {
@@ -252,12 +268,12 @@ var APU = Class({
             pulseChannel2 = (this.pulse2Enabled && this.pulseChannel2.lengthCounter > 0 ? 1 : 0),
             triangleChannel = (this.triangleEnabled && this.triangleChannel.lengthCounter > 0 ? 1 : 0),
             noiseChannel = (this.noiseEnabled && this.noiseChannel.lengthCounter > 0 ? 1 : 0),
-            dmcChannel = 1,
+            dmcChannel = (this.dmcEnabled && this.dmcChannel.sampleLength > 0 ? 1 : 0),
             frameInterrupt = this.frameInterruptFlag,
-            dmcInterrupt = 1,
+            dmcInterrupt = this.dmcInterrupt,
             status = pulseChannel1 | pulseChannel2 << 1 | triangleChannel << 2 | noiseChannel << 3 | dmcChannel << 4 | 0 << 5 | frameInterrupt << 6 | dmcInterrupt << 7;
 
-        this.frameInterruptFlag = false;
+        this.frameInterruptFlag = 0;
 
         return status;
     },
@@ -288,7 +304,7 @@ var APU = Class({
             case 29830:
                 if (this.frameSequenceMode == 0) {
                     if (this.irqFlag == 0) {
-                        this.frameInterruptFlag = true;
+                        this.frameInterruptFlag = 1;
                     }
 
                     this.frameSequenceCountDown = 0;
@@ -303,14 +319,10 @@ var APU = Class({
             default:
         };
 
-        // 1 CPU clock generates 2 pulse samples (2 APU clocks).
         this.pulseChannel1.run();
         this.pulseChannel2.run();
-        this.pulseChannel1.run();
-        this.pulseChannel2.run();
-
-        // this.triangleChannel.run();
-        // this.noiseChannel.run();
+        this.triangleChannel.run();
+        this.noiseChannel.run();
 
         if (this.frequencyCountDown >= APU.FREQUENCY_CYCLES) {
             this.frequencyCountDown = 0;
@@ -343,12 +355,12 @@ var APU = Class({
             case 2:
                 this.pulseChannel1.setEnvelopeVolume();
                 this.pulseChannel2.setEnvelopeVolume();
-                this.pulseChannel1.setLengthCounter();
-                this.pulseChannel2.setLengthCounter();
                 this.triangleChannel.setLengthCounter();
                 this.triangleChannel.setLinearCounter();
                 this.pulseChannel1.setSweep(true);
                 this.pulseChannel2.setSweep();
+                this.pulseChannel1.setLengthCounter();
+                this.pulseChannel2.setLengthCounter();
                 this.noiseChannel.setEnvelopeVolume();
                 this.noiseChannel.setLengthCounter();
             break;
@@ -364,12 +376,12 @@ var APU = Class({
                 if (this.frameSequenceMode == 0) {
                     this.pulseChannel1.setEnvelopeVolume();
                     this.pulseChannel2.setEnvelopeVolume();
-                    this.pulseChannel1.setLengthCounter();
-                    this.pulseChannel2.setLengthCounter();
                     this.triangleChannel.setLengthCounter();
                     this.triangleChannel.setLinearCounter();
                     this.pulseChannel1.setSweep(true);
                     this.pulseChannel2.setSweep();
+                    this.pulseChannel1.setLengthCounter();
+                    this.pulseChannel2.setLengthCounter();
                     this.noiseChannel.setEnvelopeVolume();
                     this.noiseChannel.setLengthCounter();
                 }
@@ -378,12 +390,12 @@ var APU = Class({
             case 5:
                 this.pulseChannel1.setEnvelopeVolume();
                 this.pulseChannel2.setEnvelopeVolume();
-                this.pulseChannel1.setLengthCounter();
-                this.pulseChannel2.setLengthCounter();
                 this.triangleChannel.setLengthCounter();
                 this.triangleChannel.setLinearCounter();
                 this.pulseChannel1.setSweep(true);
                 this.pulseChannel2.setSweep();
+                this.pulseChannel1.setLengthCounter();
+                this.pulseChannel2.setLengthCounter();
                 this.noiseChannel.setEnvelopeVolume();
                 this.noiseChannel.setLengthCounter();
             break;
@@ -393,32 +405,19 @@ var APU = Class({
     },  
 
     mixer: function() {
-        var pulseOut = [],
-            tndOut = [];
+        // Mix channels.
+        _.each(this.pulseChannel1.samples, function(sample, i) {  
+            var pulse1 = sample,
+                pulse2 = this.pulseChannel2.samples[i],
+                triangle = this.triangleChannel.samples[i],
+                noise = this.noiseChannel.samples[i],
+                dmc = 0,
+                pulses = this.pulseOutTable[pulse1 + pulse2],
+                tnd = this.tndOutTable[3 * triangle + 2 * noise + 0],
+                mixed = pulses + -(tnd);
 
-        // Pulse channel volumes.
-        _.each(this.pulseChannel1.samples, function(sample, i) {
-            pulseOut.push(this.masterVolume * this.pulseOutTable[sample + this.pulseChannel2.samples[i]]);
+            this.audioOutput.play(mixed, pulse1, pulse2, triangle, noise, dmc);
         }.bind(this));
-
-        _.each(this.triangleChannel.samples, function(sample, i) {
-            tndOut.push(this.masterVolume * this.tndOutTable[3 * sample + 2 * this.noiseChannel.samples[i] + 0]);
-        }.bind(this));
-
-        // _.each(this.triangleChannel.samples, function(sample, i) {
-        //     tndOut.push(this.masterVolume * this.tndOutTable[3 * sample + 2 * 0 + 0]);
-        // }.bind(this));
-
-        // _.each(this.noiseChannel.samples, function(sample, i) {
-        //     tndOut.push(this.masterVolume * this.tndOutTable[3 * 0 + 2 * sample + 0]);
-        // }.bind(this));
-
-        this.pulseChannel1.samples.length = 0;
-        this.pulseChannel2.samples.length = 0;
-        this.triangleChannel.samples.length = 0;
-        this.noiseChannel.samples.length = 0;
-
-        // this.audioOutput.play(pulseOut, tndOut);
     },
 
     dump: function() {
@@ -428,7 +427,7 @@ var APU = Class({
 
 var PulseChannel = Class({
     $const: {
-        MAX_VOLUME: 15              // 4 bits from 0x4000 register.
+
     },
 
     dutySequence: [
@@ -442,7 +441,8 @@ var PulseChannel = Class({
         var options = options || {};
 
         this.apu = options.apu;
-        this.samples = [];
+        this.samples = new Array(APU.FREQUENCY_CYCLES);
+        this.sampleIndex = 0;
         this.duty = 0;
         this.haltLengthCounter = 0;
         this.constantVolume = 0;
@@ -452,7 +452,7 @@ var PulseChannel = Class({
         this.periodHigh = 0;
         this.negateFlag = 0;            // 0: add to period, sweeping toward lower frequencies. 21: subtract from period, sweeping toward higher frequencies.
         this.periodCountDown = 0;
-        this.dutyIndex = 0;
+        this.dutyIndex = -1;
         this.decayVolume = 0;
         this.decayCountDown = 0;
         this.shiftCount = 0;
@@ -461,6 +461,10 @@ var PulseChannel = Class({
         this.resetEnvelope = false;
         this.sweetReload = false;
         this.periodTimer = 0;
+        this.sweepCarryOver = false;
+        this.sweepZeroBefore = false;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
     },
 
     load: function() {
@@ -469,6 +473,7 @@ var PulseChannel = Class({
 
     reset: function() {
         this.samples.length = 0;
+        this.sampleIndex = 0;
         this.duty = 0;
         this.haltLengthCounter = 0;
         this.constantVolume = 0;
@@ -478,7 +483,7 @@ var PulseChannel = Class({
         this.periodHigh = 0;
         this.negateFlag = 0;
         this.periodCountDown = 0;
-        this.dutyIndex = 0;
+        this.dutyIndex = -1;
         this.decayVolume = 0;
         this.decayCountDown = 0;
         this.shiftCount = 0;
@@ -487,6 +492,10 @@ var PulseChannel = Class({
         this.resetEnvelope = false;
         this.sweetReload = false;
         this.periodTimer = 0;
+        this.sweepCarryOver = false;
+        this.sweepZeroBefore = false;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
     },
 
     setDuty: function(data) {
@@ -499,10 +508,6 @@ var PulseChannel = Class({
 
     setConstantVolume: function(data) {
         this.constantVolume = data >> 4 & 1;
-
-        if (this.constantVolume == 0) {
-            this.decayCountDown = this.volume;
-        }
     },
 
     setVolume: function(data) {
@@ -536,15 +541,11 @@ var PulseChannel = Class({
 
         if (channelEnabled) {
             this.lengthCounter = this.apu.lengthTable[data >> 3];
-        } else {
-            this.lengthCounter = 0;
-        }
+        } 
 
         this.duty = 0;
-        this.periodCountDown = this.getPeriodTimer();
         this.dutyIndex = 0;
         this.resetEnvelope = true;
-        this.decayVolume = 0x0F;
     },
 
     /*
@@ -555,7 +556,7 @@ var PulseChannel = Class({
     },
 
     setNegateFlag: function(data) {
-        this.negateFlag = data >> 3 & 0x01;
+        this.negateFlag = data >> 3 & 1;
     },
 
     setShiftCount: function(data) {
@@ -567,30 +568,73 @@ var PulseChannel = Class({
     },
 
     setSweetReloads: function() {
+        if (this.sweepCounter == 0) {
+            this.sweepZeroBefore = true;
+        } else {
+            this.sweepZeroBefore = false;
+        }
+
         this.sweetReload = true;
+    },
+
+    /*
+        Sweep muting channel (http://wiki.nesdev.com/w/index.php/APU_Sweep, Muting section).
+    */
+    isSweepMuting: function() {
+        var isMute = false;
+
+        if (this.periodTimer > 0x7FF) {
+            isMute = true;
+        }   
+
+        if (this.sweepCarryOver == true) {
+            isMute = true;
+        }
+
+        if (this.periodTimer < 8) {
+            isMute = true;
+        }
+
+        return isMute;
     },
 
     /*
         Sweep unit periodically adjust period up or down (http://wiki.nesdev.com/w/index.php/APU_Sweep).
     */  
     setSweep: function(isChannel1) {
-        var sweepPeriod = this.periodCountDown;
+        var changeAmount = 0,
+            targetPeriod = 0,
+            isSweepMuting = this.isSweepMuting();
 
         if (this.sweetReload) {
-            if (this.sweepCounter == 0) {
-                if (this.sweepEnabled == 1) {
-                    sweepPeriod >>= this.shiftCount;
+            if (this.sweepZeroBefore == true) {
+                if (this.sweepEnabled == 1 && isSweepMuting == false) {
 
-                    // Negate flag. 0: add to period, sweeping toward lower frequencies. 1: subtract from period, sweeping toward higher frequencies
-                    if (this.negateFlag == 1) {
-                        sweepPeriod *= -1; 
+                    if (this.shiftCount > 0) {
+                        if (isChannel1 == 1) {
+                            changeAmount = (this.periodTimer >> this.shiftCount) + 1;
+                        } else {
+                            changeAmount = this.periodTimer >> this.shiftCount;
+                        }
                         
-                        if (isChannel1) {
-                            sweepPeriod++;
+                        // Negate flag. 0: add to period, sweeping toward lower frequencies. 1: subtract from period, sweeping toward higher frequencies
+                        if (this.negateFlag == 1) {
+                            targetPeriod = this.periodTimer - changeAmount;
+                        } else {
+                            targetPeriod = this.periodTimer + changeAmount;
+                        }
+
+                        if (targetPeriod < 0x7FF) {
+                            this.periodTimer = targetPeriod;
                         }
                     }
 
-                    this.periodCountDown += sweepPeriod;
+                    if (this.periodTimer > 0xFFF) {
+                        this.periodTimer &= 0xFFF;
+                        this.sweepCarryOver = true;
+                    } else {
+                        this.sweepCarryOver = false;
+                    }
                 }
             }
 
@@ -600,21 +644,34 @@ var PulseChannel = Class({
             if (this.sweepCounter > 0) {
                 this.sweepCounter--;
             } else {
-                this.sweepCounter = this.dividerPeriod;
+               if (this.sweepEnabled == 1 && isSweepMuting == false) {
+                    this.sweepCounter = this.dividerPeriod;
 
-                if (this.sweepEnabled == 1 && this.periodCountDown < 8) {
-                    sweepPeriod >>= this.shiftCount;
-
-                    // Negate flag. 0: add to period, sweeping toward lower frequencies. 1: subtract from period, sweeping toward higher frequencies
-                    if (this.negateFlag == 1) {
-                        sweepPeriod *= -1; 
+                    if (this.shiftCount > 0) {
+                        if (isChannel1 == 1) {
+                            changeAmount = (this.periodTimer >> this.shiftCount) + 1;
+                        } else {
+                            changeAmount = this.periodTimer >> this.shiftCount;
+                        }
                         
-                        if (isChannel1) {
-                            sweepPeriod++;
+                        // Negate flag. 0: add to period, sweeping toward lower frequencies. 1: subtract from period, sweeping toward higher frequencies
+                        if (this.negateFlag == 1) {
+                            targetPeriod = this.periodTimer - changeAmount;
+                        } else {
+                            targetPeriod = this.periodTimer + changeAmount;
+                        } 
+
+                        if (targetPeriod < 0x7FF) {
+                            this.periodTimer = targetPeriod;
                         }
                     }
 
-                    this.periodCountDown += sweepPeriod;
+                    if (this.periodTimer > 0xFFF) {
+                        this.periodTimer &= 0xFFF;
+                        this.sweepCarryOver = true;
+                    } else {
+                        this.sweepCarryOver = false;
+                    }
                 }
             }
         }
@@ -627,22 +684,15 @@ var PulseChannel = Class({
         if (_.isUndefined(length) == false) {
             this.lengthCounter = length;
         } else {
-            if (this.haltLengthCounter == false) {
-                if (this.lengthCounter > 0) {
-                    this.lengthCounter--;
-                }
+            if (this.haltLengthCounter == false && this.lengthCounter > 0) {
+                this.lengthCounter--;
             } 
-        }
-
-        if (this.lengthCounter == 0) {
-            this.silenced = true;
-        } else {
-            this.silenced = false;
         }
     },
 
     getVolume: function() {
-        var vol = 0;
+        var vol = 0,
+            sweepMuting = this.isSweepMuting();
 
         if (this.constantVolume == 1) {
             vol = this.volume;
@@ -650,7 +700,7 @@ var PulseChannel = Class({
             vol = this.decayVolume;
         }
 
-        if (this.periodCountDown < 8 || this.silenced) {
+        if (sweepMuting == true || this.lengthCounter <= 0) {
             vol = 0;
         }
 
@@ -664,7 +714,7 @@ var PulseChannel = Class({
         if (this.resetEnvelope) {
             this.resetEnvelope = false;
             this.decayCountDown = this.volume;
-            this.decayVolume = 0xF;
+            this.decayVolume = 0x0F;
         } else {
             if (this.decayCountDown > 0) {
                 this.decayCountDown--;
@@ -682,13 +732,7 @@ var PulseChannel = Class({
         }
     },
 
-    run: function() {
-        if (this.dutySequence[this.duty][this.dutyIndex] == 1) {
-            this.samples.push(this.getVolume());
-        } else {
-            this.samples.push(0);
-        }
-
+    run: function() { 
         // Reset period when one cycle is completed.
         if (this.periodCountDown <= 0) {   
             this.periodCountDown = this.getPeriodTimer();
@@ -702,6 +746,24 @@ var PulseChannel = Class({
             }
         } else {
             this.periodCountDown--;
+        }
+
+        if (this.dutySequence[this.duty][this.dutyIndex] == 1) {
+            this.sampleAvg += this.getVolume();
+        } 
+
+        this.sampleCounts++;
+
+        if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
+            this.sampleCounts = 0;
+            this.sampleAvg /= APU.SAMPLE_AVERAGE;
+            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sampleAvg = 0;
+            this.sampleIndex++;
+
+            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
+                this.sampleIndex = 0;
+            }
         }
     }
 });
@@ -725,8 +787,11 @@ var TriangleChannel = Class({
         this.periodTimer = 0;
         this.periodCountDown = 0;
         this.silenced = false;
-        this.clockIndex = -1;
-        this.samples = [];
+        this.clockIndex = 0;
+        this.samples = new Array(APU.FREQUENCY_CYCLES);
+        this.sampleIndex = 0;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
     },
 
     load: function() {
@@ -744,8 +809,11 @@ var TriangleChannel = Class({
         this.periodTimer = 0;
         this.periodCountDown = 0;
         this.silenced = false;
-        this.clockIndex = -1;
+        this.clockIndex = 0;
         this.samples.length = 0;
+        this.sampleIndex = 0;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
     },
 
     setLinearControl: function(data) {
@@ -768,8 +836,6 @@ var TriangleChannel = Class({
     reloads: function(data) {
         if (this.apu.triangleEnabled) {
             this.lengthCounter = this.apu.lengthTable[data >> 3];
-        } else {
-            this.lengthCounter = 0;
         }
 
         this.linearControlReload = true;
@@ -779,17 +845,9 @@ var TriangleChannel = Class({
         if (_.isUndefined(length) == false) {
             this.lengthCounter = length;
         } else {
-            if (this.haltLengthCounter == false) {
-                if (this.lengthCounter > 0) {
-                    this.lengthCounter--;
-                }
+            if (this.haltLengthCounter == false && this.lengthCounter > 0) {
+                this.lengthCounter--;
             } 
-        }
-
-        if (this.lengthCounter == 0) {
-            this.silenced = true;
-        } else {
-            this.silenced = false;
         }
     },
 
@@ -825,7 +883,7 @@ var TriangleChannel = Class({
                 if (this.periodCountDown > 2) {
                     this.clockIndex++;
 
-                    if (this.clockIndex > this.clockSequence.length) {
+                    if (this.clockIndex >= this.clockSequence.length) {
                         this.clockIndex = 0;
                     }
                 } else {
@@ -837,9 +895,23 @@ var TriangleChannel = Class({
         }
 
         if (lowPeriod) {
-            this.samples.push(7.5);
+            this.sampleAvg += 7.5;
         } else {
-            this.samples.push(this.clockSequence[this.clockIndex]);
+            this.sampleAvg += this.clockSequence[this.clockIndex];
+        }
+
+        this.sampleCounts++;
+
+        if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
+            this.sampleCounts = 0;
+            this.sampleAvg /= APU.SAMPLE_AVERAGE;
+            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sampleAvg = 0;
+            this.sampleIndex++;
+
+            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
+                this.sampleIndex = 0;
+            }
         }
     }
 });
@@ -858,13 +930,16 @@ var NoiseChannel = Class({
         this.volume = 0;
         this.mode = 0;
         this.periodTimer = 0;
-        this.samples = [],
+        this.samples = new Array(APU.FREQUENCY_CYCLES);
+        this.sampleIndex = 0;
         this.lengthCounter = 0;
         this.resetEnvelope = false;
         this.decayCountDown = 0;
         this.decayVolume = 0;
         this.periodCountDown = 0;
         this.shiftRegister = 0;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
     },
 
     load: function() {
@@ -878,12 +953,15 @@ var NoiseChannel = Class({
         this.mode = 0;
         this.periodTimer = 0;
         this.samples.length = 0;
+        this.sampleIndex = 0;
         this.lengthCounter = 0;
         this.resetEnvelope = false;
         this.decayCountDown = 0;
         this.decayVolume = 0;
         this.periodCountDown = 0;
         this.shiftRegister = 1;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
     },
 
     setHaltLengthCounter: function(data) {
@@ -909,9 +987,7 @@ var NoiseChannel = Class({
     reloads: function(data) {
         if (this.apu.noiseEnabled) {
             this.lengthCounter = this.apu.lengthTable[data >> 3];
-        } else {
-            this.lengthCounter = 0;
-        }
+        } 
 
         this.resetEnvelope = true;
     },
@@ -924,7 +1000,7 @@ var NoiseChannel = Class({
         if (this.resetEnvelope) {
             this.resetEnvelope = false;
             this.decayCountDown = this.volume;
-            this.decayVolume = 0xF;
+            this.decayVolume = 0x0F;
         } else {
             if (this.decayCountDown > 0) {
                 this.decayCountDown--;
@@ -946,17 +1022,9 @@ var NoiseChannel = Class({
         if (_.isUndefined(length) == false) {
             this.lengthCounter = length;
         } else {
-            if (this.haltLengthCounter == false) {
-                if (this.lengthCounter > 0) {
-                    this.lengthCounter--;
-                }
+            if (this.haltLengthCounter == false && this.lengthCounter > 0) {
+                this.lengthCounter--;
             } 
-        }
-
-        if (this.lengthCounter == 0) {
-            this.silenced = true;
-        } else {
-            this.silenced = false;
         }
     },
 
@@ -969,14 +1037,14 @@ var NoiseChannel = Class({
             vol = this.decayVolume;
         }
 
-        if (this.silenced || this.shiftRegister & 1 == 1) {
+        if (this.shiftRegister & 1 == 1 || this.lengthCounter == 0) {
             vol = 0;
         }
 
         return vol;
     },
 
-    run: function() { 
+    run: function() {  
         var feedback = 0,
             bit6 = 0,
             bit1 = 0,
@@ -984,8 +1052,7 @@ var NoiseChannel = Class({
 
         if (this.periodCountDown <= 0) {
             this.periodCountDown = this.getPeriodTimer();
-        } else {
-            this.periodCountDown--;
+
             bit0 = this.shiftRegister & 1;
 
             // 1. Feedback is calculated as the exclusive-OR of bit 0 and one other bit: bit 6 if Mode flag is set, otherwise bit 1.
@@ -1001,8 +1068,184 @@ var NoiseChannel = Class({
 
             this.shiftRegister >>= 1;
             this.shiftRegister = this.shiftRegister | (feedback << 14);
+        } else {
+            this.periodCountDown--;
         }
 
-        this.samples.push(this.getVolume());
+        this.sampleAvg += this.getVolume();
+
+        this.sampleCounts++;
+
+        if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
+            this.sampleCounts = 0;
+            this.sampleAvg /= APU.SAMPLE_AVERAGE;
+            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sampleAvg = 0;
+            this.sampleIndex++;
+
+            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
+                this.sampleIndex = 0;
+            }
+        }
+    }
+});
+
+var DMCChannel = Class({
+    $const: {
+
+    },
+
+    frequencyRate: [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106,  84,  72,  54],
+
+    constructor: function(options) {
+        this.apu = options.apu;
+        this.samples = [];
+        this.irqFlag = 0;
+        this.loop = 0;
+        this.rate = 0;
+        this.outputLevel = 0;
+        this.sampleAddress = 0;
+        this.oldSampleAddress = 0;
+        this.sampleLength = 0;
+        this.periodCountDown = 0;
+        this.bitRemainingCounter = 8;
+        this.silenceFlag = false;
+        this.sampleBuffer = 0;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
+        this.sampleIndex = 0;
+        this.remainingLength = 0;
+    },
+
+    load: function() {
+        this.reset();
+    },
+
+    reset: function() {
+        this.samples.length = 0;
+        this.irqFlag = 0;
+        this.loop = 0;
+        this.rate = 0;
+        this.outputLevel = 0;
+        this.sampleAddress = 0;
+        this.oldSampleAddress = 0;
+        this.sampleLength = 0;
+        this.periodCountDown = 0;
+        this.bitRemainingCounter = 8;
+        this.silenceFlag = false;
+        this.sampleBuffer = 0;
+        this.sampleAvg = 0;
+        this.sampleCounts = 0;
+        this.sampleIndex = 0;
+        this.remainingLength = 0;
+    },
+
+    setIRQ: function(data) {
+        this.irqFlag = data >> 7;
+
+        if (this.irqFlag == 0) {
+            this.apu.dmcInterrupt = 0;
+        }
+    },
+
+    setLoop: function(data) {
+        this.loop = data >> 6 & 1;
+    },
+
+    setRate: function(data) {
+        this.rate = data & 0x0F;
+    },
+
+    setOutputLevel: function(data) {
+        this.outputLevel = data & 0x7F;
+    },
+
+    setSampleAddress: function(data) {
+        this.sampleAddress = 0xC000 + (data * 64);
+        this.oldSampleAddress = this.sampleAddress;
+    },
+
+    setSampleLength: function(data) {
+        this.sampleLength = (data * 16) + 1;
+    },
+
+    getPeriodTimer: function() {
+        return this.frequencyRate[this.rate];
+    },
+
+    run: function() {
+        var bufferAddress = 0,
+            outputLevel = this.outputLevel;
+
+        if (this.periodCountDown <= 0) {
+            this.periodCountDown = this.getPeriodTimer();
+
+            if (this.silenceFlag == false) {
+                if (this.shiftRegister & 1 == 1) {
+                    if (outputLevel <= 125) {
+                        outputLevel += 2;
+                    }
+                } else {
+                    if (outputLevel >= 2) {
+                        outputLevel -= 2;
+                    }
+                }
+            }
+
+            this.shiftRegister >>= 1;
+            this.bitRemainingCounter--;
+
+            if (this.bitRemainingCounter == 0) {
+                this.bitRemainingCounter = 8;
+
+                if (_.isUndefined(this.sampleBuffer)) {
+                    this.silenceFlag = true;
+                } else {
+                    this.silenceFlag = false;
+                    this.shiftRegister = this.sampleBuffer;
+                    delete this.sampleBuffer;
+                }
+            }
+        } else {
+            this.periodCountDown--;
+        }
+
+        if (_.isUndefined(this.sampleBuffer)) {
+            if (this.remainingLength > 0) {
+                this.sampleAddress++;
+
+                if (this.sampleAddress > 0xFFFF) {
+                    this.sampleAddress = this.sampleAddress & 0xFFFF + 0x8000;
+                }
+ 
+                this.sampleBuffer = this.mobo.cpu.readFromRAM(this.sampleAddress);
+                this.remainingLength--;
+            } else {
+                if (this.loop == 1) {
+                    this.remainingLength = this.sampleLength;
+                    this.sampleAddress = this.oldSampleAddress;
+                } else {
+                    if (this.irqFlag == 1) {
+                        this.apu.dmcInterrupt = 1;
+                    }
+                }
+            }
+        }
+
+        this.sampleAvg += outputLevel;
+
+        this.sampleCounts++;
+
+        if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
+            this.sampleCounts = 0;
+            this.sampleAvg /= APU.SAMPLE_AVERAGE;
+            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sampleAvg = 0;
+            this.sampleIndex++;
+
+            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
+                this.sampleIndex = 0;
+            }
+        }
     }
 });
