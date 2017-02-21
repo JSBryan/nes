@@ -27,6 +27,12 @@ var AudioOutput = Class({
         this.data = this.buffer.getChannelData(0);
         this.node.start();
 
+        this.loadFilters();
+
+        this.reset();
+    },
+
+    loadFilters: function() {
         // this.highpass90 = this.context.createBiquadFilter();
         // this.node.connect(this.highpass90);
         // this.highpass90.connect(this.context.destination);
@@ -39,20 +45,24 @@ var AudioOutput = Class({
         // this.highpass440.type = 'highpass';
         // this.highpass440.frequency.value = 440;
 
+        this.lowpass14000 = this.context.createBiquadFilter();
+        this.node.connect(this.lowpass14000);
+        this.lowpass14000.connect(this.context.destination);
+        this.lowpass14000.type = 'lowpass';
+        this.lowpass14000.frequency.value = 14000;
+
         // this.lowpass14000 = this.context.createBiquadFilter();
         // this.node.connect(this.lowpass14000);
         // this.lowpass14000.connect(this.context.destination);
-        // this.lowpass14000.type = 'lowpass';
-        // this.lowpass14000.frequency.value = 14000;
-
-        this.reset();
+        // this.lowpass14000.type = 'bandpass';
+        // this.lowpass14000.frequency.value = 0;
     },
 
     reset: function() {
 
     },
 
-    play: function(sample) {
+    play: function(sample, pulse1, pulse2, triangle, noise, dmc) {
         this.data[this.sampleIndex] = sample;
         this.sampleIndex++;
 

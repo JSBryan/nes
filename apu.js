@@ -21,14 +21,8 @@ var APU = Class({
         STATUS_REGISTER: 0x4015,
         FRAME_SEQUENCE_REGISTER: 0x4017,              // Sequencer mode: 0 selects 4-step sequence, 1 selects 5-step sequence
         FRAME_SEQUENCE_CYCLES: 7457,                 // Frame sequence step in CPU cycles.
-        SAMPLE_AVERAGE: 20,
-        FREQUENCY_CYCLES: 1102
+        SAMPLE_AVERAGE: 20
     },
-
-    frameSequenceModes: [
-        [1, 2, 3, 4, 0],
-        [1, 2, 3, 4, 5, 0]
-    ],
 
     lengthTable: [10, 254, 20,  2, 40,  4, 80,  6, 160,  8, 60, 10, 14, 12, 26, 14,12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30],
     pulseOutTable: [],
@@ -43,14 +37,13 @@ var APU = Class({
         this.noiseChannel = new NoiseChannel({ apu: this });
         this.dmcChannel = new DMCChannel({ apu: this });
         this.frameSequenceMode = 0;
-        this.samples = [];
         this.frameSequenceCountDown = 0;
         this.frameSequenceStep = 0;
-        this.dmcEnabled = true;
-        this.noiseEnabled = true;
-        this.triangleEnabled = true;
-        this.pulse1Enabled = true;
-        this.pulse2Enabled = true;
+        this.dmcEnabled = 1;
+        this.noiseEnabled = 1;
+        this.triangleEnabled = 1;
+        this.pulse1Enabled = 1;
+        this.pulse2Enabled = 1;
         this.frequencyCountDown = 0;
         this.irqFlag = 0;
         this.frameInterruptFlag = 0;
@@ -73,14 +66,13 @@ var APU = Class({
         this.noiseChannel.reset();
         this.dmcChannel.reset();
         this.frameSequenceMode = 0;
-        this.samples = [];
         this.frameSequenceCountDown = 0;
         this.frameSequenceStep = 0;
-        this.dmcEnabled = true;
-        this.noiseEnabled = true;
-        this.triangleEnabled = true;
-        this.pulse1Enabled = true;
-        this.pulse2Enabled = true;
+        this.dmcEnabled = 1;
+        this.noiseEnabled = 1;
+        this.triangleEnabled = 1;
+        this.pulse1Enabled = 1;
+        this.pulse2Enabled = 1;
         this.frequencyCountDown = 0;
         this.irqFlag = 0;
         this.frameInterruptFlag = 0;
@@ -255,7 +247,6 @@ var APU = Class({
         } else {
             if (this.dmcChannel.remainingLength == 0) {
                 this.remainingLength = this.dmcChannel.sampleLength;
-                this.remainingLength = this.dmcChannel.sampleLength;
                 this.sampleAddress = this.dmcChannel.oldSampleAddress;
             }    
         }
@@ -324,7 +315,7 @@ var APU = Class({
         this.triangleChannel.run();
         this.noiseChannel.run();
 
-        if (this.frequencyCountDown >= APU.FREQUENCY_CYCLES) {
+        if (this.frequencyCountDown >= APU.SAMPLE_AVERAGE) {
             this.frequencyCountDown = 0;
             this.mixer();
         }
@@ -405,19 +396,16 @@ var APU = Class({
     },  
 
     mixer: function() {
-        // Mix channels.
-        _.each(this.pulseChannel1.samples, function(sample, i) {  
-            var pulse1 = sample,
-                pulse2 = this.pulseChannel2.samples[i],
-                triangle = this.triangleChannel.samples[i],
-                noise = this.noiseChannel.samples[i],
-                dmc = 0,
-                pulses = this.pulseOutTable[pulse1 + pulse2],
-                tnd = this.tndOutTable[3 * triangle + 2 * noise + 0],
-                mixed = pulses + -(tnd);
+        var pulse1 = this.pulseChannel1.sample,
+            pulse2 = this.pulseChannel2.sample,
+            triangle = this.triangleChannel.sample,
+            noise = this.noiseChannel.sample,
+            dmc = 0,
+            pulses = this.pulseOutTable[(pulse1 + pulse2) >> 0],
+            tnd = this.tndOutTable[(3 * triangle + 2 * noise + 0) >> 0],
+            mixed = pulses + -(tnd);
 
-            this.audioOutput.play(mixed, pulse1, pulse2, triangle, noise, dmc);
-        }.bind(this));
+        this.audioOutput.play(mixed);
     },
 
     dump: function() {
@@ -438,11 +426,8 @@ var PulseChannel = Class({
     ],
 
     constructor: function(options) { 
-        var options = options || {};
-
         this.apu = options.apu;
-        this.samples = new Array(APU.FREQUENCY_CYCLES);
-        this.sampleIndex = 0;
+        this.sample = 0;
         this.duty = 0;
         this.haltLengthCounter = 0;
         this.constantVolume = 0;
@@ -457,7 +442,6 @@ var PulseChannel = Class({
         this.decayCountDown = 0;
         this.shiftCount = 0;
         this.dividerPeriod = 0;
-        this.silenced = false;
         this.resetEnvelope = false;
         this.sweetReload = false;
         this.periodTimer = 0;
@@ -472,8 +456,7 @@ var PulseChannel = Class({
     },
 
     reset: function() {
-        this.samples.length = 0;
-        this.sampleIndex = 0;
+        this.sample = 0;
         this.duty = 0;
         this.haltLengthCounter = 0;
         this.constantVolume = 0;
@@ -488,7 +471,6 @@ var PulseChannel = Class({
         this.decayCountDown = 0;
         this.shiftCount = 0;
         this.dividerPeriod = 0;
-        this.silenced = false;
         this.resetEnvelope = false;
         this.sweetReload = false;
         this.periodTimer = 0;
@@ -757,13 +739,8 @@ var PulseChannel = Class({
         if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
             this.sampleCounts = 0;
             this.sampleAvg /= APU.SAMPLE_AVERAGE;
-            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sample = this.sampleAvg;
             this.sampleAvg = 0;
-            this.sampleIndex++;
-
-            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
-                this.sampleIndex = 0;
-            }
         }
     }
 });
@@ -786,10 +763,8 @@ var TriangleChannel = Class({
         this.linearCounter = 0;
         this.periodTimer = 0;
         this.periodCountDown = 0;
-        this.silenced = false;
         this.clockIndex = 0;
-        this.samples = new Array(APU.FREQUENCY_CYCLES);
-        this.sampleIndex = 0;
+        this.sample = 0;
         this.sampleAvg = 0;
         this.sampleCounts = 0;
     },
@@ -808,10 +783,8 @@ var TriangleChannel = Class({
         this.linearCounter = 0;
         this.periodTimer = 0;
         this.periodCountDown = 0;
-        this.silenced = false;
         this.clockIndex = 0;
-        this.samples.length = 0;
-        this.sampleIndex = 0;
+        this.sample = 0;
         this.sampleAvg = 0;
         this.sampleCounts = 0;
     },
@@ -880,7 +853,7 @@ var TriangleChannel = Class({
             if (this.periodCountDown <= 0) {
                 this.periodCountDown = this.getPeriodTimer();
 
-                if (this.periodCountDown > 2) {
+                if (this.periodCountDown >= 2) {
                     this.clockIndex++;
 
                     if (this.clockIndex >= this.clockSequence.length) {
@@ -905,13 +878,8 @@ var TriangleChannel = Class({
         if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
             this.sampleCounts = 0;
             this.sampleAvg /= APU.SAMPLE_AVERAGE;
-            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sample = this.sampleAvg;
             this.sampleAvg = 0;
-            this.sampleIndex++;
-
-            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
-                this.sampleIndex = 0;
-            }
         }
     }
 });
@@ -930,8 +898,7 @@ var NoiseChannel = Class({
         this.volume = 0;
         this.mode = 0;
         this.periodTimer = 0;
-        this.samples = new Array(APU.FREQUENCY_CYCLES);
-        this.sampleIndex = 0;
+        this.sample = 0;
         this.lengthCounter = 0;
         this.resetEnvelope = false;
         this.decayCountDown = 0;
@@ -952,8 +919,7 @@ var NoiseChannel = Class({
         this.volume = 0;
         this.mode = 0;
         this.periodTimer = 0;
-        this.samples.length = 0;
-        this.sampleIndex = 0;
+        this.sample = 0;
         this.lengthCounter = 0;
         this.resetEnvelope = false;
         this.decayCountDown = 0;
@@ -1079,13 +1045,8 @@ var NoiseChannel = Class({
         if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
             this.sampleCounts = 0;
             this.sampleAvg /= APU.SAMPLE_AVERAGE;
-            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sample = this.sampleAvg;
             this.sampleAvg = 0;
-            this.sampleIndex++;
-
-            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
-                this.sampleIndex = 0;
-            }
         }
     }
 });
@@ -1099,7 +1060,7 @@ var DMCChannel = Class({
 
     constructor: function(options) {
         this.apu = options.apu;
-        this.samples = [];
+        this.sample = 0;
         this.irqFlag = 0;
         this.loop = 0;
         this.rate = 0;
@@ -1113,8 +1074,8 @@ var DMCChannel = Class({
         this.sampleBuffer = 0;
         this.sampleAvg = 0;
         this.sampleCounts = 0;
-        this.sampleIndex = 0;
         this.remainingLength = 0;
+        this.shiftRegister = 0;
     },
 
     load: function() {
@@ -1122,7 +1083,7 @@ var DMCChannel = Class({
     },
 
     reset: function() {
-        this.samples.length = 0;
+        this.sample = 0;
         this.irqFlag = 0;
         this.loop = 0;
         this.rate = 0;
@@ -1136,8 +1097,8 @@ var DMCChannel = Class({
         this.sampleBuffer = 0;
         this.sampleAvg = 0;
         this.sampleCounts = 0;
-        this.sampleIndex = 0;
         this.remainingLength = 0;
+        this.shiftRegister = 0;
     },
 
     setIRQ: function(data) {
@@ -1239,13 +1200,8 @@ var DMCChannel = Class({
         if (this.sampleCounts >= APU.SAMPLE_AVERAGE) {
             this.sampleCounts = 0;
             this.sampleAvg /= APU.SAMPLE_AVERAGE;
-            this.samples[this.sampleIndex] = Math.floor(this.sampleAvg);
+            this.sample = this.sampleAvg;
             this.sampleAvg = 0;
-            this.sampleIndex++;
-
-            if (this.sampleIndex >= APU.FREQUENCY_CYCLES) {
-                this.sampleIndex = 0;
-            }
         }
     }
 });

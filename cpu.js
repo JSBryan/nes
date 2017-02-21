@@ -692,7 +692,7 @@ var CPU = Class({
             this.emulate();
             this.mobo.ppu.run(this.cycles);
             this.mobo.apu.run(this.cycles);
-            this.totalCycles += this.cycles;
+            // this.totalCycles += this.cycles;
             this.cycles = 0;
 
             // To run test roms.
